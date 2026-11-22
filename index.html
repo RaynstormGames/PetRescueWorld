@@ -236,6 +236,13 @@ nav.tabs .ic{font-size:21px; line-height:1.15}
 .seg button.on{background:var(--green); color:#fff}
 #gpsmap{height:340px; border-radius:20px; border:3px solid var(--line); overflow:hidden; z-index:1}
 .mapicon{background:transparent; border:none; font-size:25px; text-align:center; filter:drop-shadow(0 2px 2px rgba(0,0,0,.4))}
+.petmarker-wrap{background:transparent; border:none}
+.petmark{position:relative; width:52px; height:52px; pointer-events:none}
+.petmark .petmark-ground{position:absolute; left:50%; bottom:0; transform:translateX(-50%); width:38px; height:11px; border-radius:50%;
+  background:radial-gradient(ellipse at center, rgba(20,35,10,.45) 0%, rgba(20,35,10,.18) 55%, rgba(20,35,10,0) 72%);
+  box-shadow:0 0 0 2px rgba(255,255,255,.55), 0 0 0 4px rgba(90,160,60,.45)}
+.petmark img{position:absolute; left:0; bottom:4px; width:52px; height:48px; object-fit:contain; display:block;
+  filter:drop-shadow(0 2px 2px rgba(0,0,0,.35))}
 .growstage{position:relative; display:flex; align-items:flex-end; justify-content:center; height:250px}
 .growglow{position:absolute; left:50%; bottom:0; transform:translateX(-50%); width:250px; height:250px; border-radius:50%;
   background:radial-gradient(circle,rgba(255,215,80,.65),rgba(255,215,80,0) 65%); animation:glowpulse 1.6s ease-in-out infinite}
@@ -1551,7 +1558,7 @@ async function careWithAnim(pet, action){
 
 /* ================= MAP TAB — walk, nodes, trivia, merchant ================= */
 var mapSeg = "practice";
-var R = { map:null, layer:null, watchId:null, walking:false, dist:0, lastPos:null, pos:null, nodes:[], loaded:false, perm:"" };
+var R = { map:null, layer:null, meMarker:null, watchId:null, walking:false, dist:0, lastPos:null, pos:null, nodes:[], loaded:false, perm:"" };
 function tierFor(node){
   if(node.own) return "White";
   var h = 0; for(var i=0;i<node.id.length;i++) h += node.id.charCodeAt(i);
@@ -1818,7 +1825,7 @@ function startWatch(){
     }
     R.lastPos = p; R.pos = p;
     var chip = document.querySelector("#view .chip");
-    if(R.map){ R.map.panTo([p.lat, p.lon]); }
+    if(R.map){ R.map.panTo([p.lat, p.lon]); updatePlayerMarker(); }
     renderWalkChip();
   }, function(){}, {enableHighAccuracy:true, timeout:20000, maximumAge:5000});
 }
@@ -1845,6 +1852,38 @@ function toggleWalk(){
   }
   render();
 }
+/* Player marker = the currently selected pet (Main tab's current pet).
+   Falls back to the generic person marker before a starter is chosen
+   or if a sprite is somehow missing. */
+function playerIcon(){
+  var pet = null;
+  try{ pet = currentPet(); }catch(e){}
+  if(pet){
+    var sp = SP[pet.speciesId];
+    var src = sp ? petImgSrc(sp, pet.uid) : "";
+    if(src){
+      return L.divIcon({className:"petmarker-wrap",
+        html:'<div class="petmark"><span class="petmark-ground"></span><img src="'+src+'" alt="'+esc(petDisplayName(pet))+'"></div>',
+        iconSize:[52,52], iconAnchor:[26,50], popupAnchor:[0,-48]});
+    }
+  }
+  return L.divIcon({className:"mapicon", html:"🧍", iconSize:[28,28]});
+}
+function playerPopup(){
+  var pet = null;
+  try{ pet = currentPet(); }catch(e){}
+  return pet ? "<b>" + esc(petDisplayName(pet)) + "</b> · You are here" : "You are here";
+}
+function updatePlayerMarker(){
+  if(!window.L || !R.map || !R.layer || !R.pos) return;
+  if(!R.meMarker){
+    R.meMarker = L.marker([R.pos.lat, R.pos.lon], {icon: playerIcon(), zIndexOffset:1000}).addTo(R.layer).bindPopup(playerPopup());
+  } else {
+    R.meMarker.setLatLng([R.pos.lat, R.pos.lon]);
+    R.meMarker.setIcon(playerIcon());
+    R.meMarker.setPopupContent(playerPopup());
+  }
+}
 function drawGpsMap(){
   if(!window.L || !R.pos) return;
   var el = $("gpsmap"); if(!el) return;
@@ -1857,7 +1896,8 @@ function drawGpsMap(){
     setTimeout(function(){ if(R.map) R.map.invalidateSize(); }, 60);
   }
   R.layer.clearLayers();
-  L.marker([R.pos.lat, R.pos.lon], {icon: L.divIcon({className:"mapicon", html:"🧍", iconSize:[28,28]})}).addTo(R.layer).bindPopup("You are here");
+  R.meMarker = null;
+  updatePlayerMarker();
   R.nodes.forEach(function(n){
     var icon = n.kind === "vet" ? "🏥" : n.kind === "tree" ? (S.ownNodes.indexOf(n.id) >= 0 ? "❗" : "🌳") : "❓";
     if(S.merchant.treeId === n.id) icon = "🧳";
@@ -2365,7 +2405,7 @@ function renderSettings(){
     + '<div class="kv"><span>Profile ID</span><b style="font-size:12.5px;word-break:break-all;text-align:right;max-width:60%">'+esc(S.profileId)+'</b></div>'
     + '<div class="kv"><span>Recovery code</span><b>'+esc(S.recoveryCode)+'</b></div>'
     + '<p class="small muted">Keep your recovery code somewhere safe — it\'s how you get this profile back on another device.</p>'
-    + '<p class="small muted" style="margin:8px 0 0">Build: Yard fixes · Nov 21, 2026 · v13</p></div>'
+    + '<p class="small muted" style="margin:8px 0 0">Build: Pet marker · Nov 22, 2026 · v14</p></div>'
     + '<div class="card"><h3 style="margin:0 0 8px">☁️ Sync & session</h3>'
     + '<p class="small" id="syncDetail" style="margin:0 0 6px"></p>'
     + '<p class="small" style="margin:0 0 10px">Session: <b id="sessText"></b></p>'
