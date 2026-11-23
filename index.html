@@ -796,7 +796,7 @@ function defaultState(){
     answered:[], nodePlays:{}, ownNodes:[], walks:[], totalDist:0,
     merchant:{date:"", items:[], buys:0, locLabel:"", treeId:""}, guide:{}, lastTick:Date.now(),
     starterOffer:null, morale:{paidDate:"", hourHist:{}}, lifetime:{correct:0, hits:0, battlesWon:0},
-    treatDay:"", treatCount:0, streak:0, keeperXP:0, revives:0, passPetDone:false, ahDay:"", ahListings:[], pingReadyAt:0 };
+    treatDay:"", treatCount:0, streak:0, keeperXP:0, revives:0, passPetDone:false, ahDay:"", ahListings:[], pingReadyAt:0, walkQuest:{date:"", distM:0, rewarded:0, coins:0, assetClaimed:false, assetId:""} };
 }
 function normalizePet(p){
   if(!p.needs) p.needs = freshNeeds();
@@ -843,6 +843,13 @@ function backfillIdentity(){
   if(!S.ahListings) S.ahListings = [];
   if(S.pingReadyAt===undefined) S.pingReadyAt = 0;
   if(S.merchant && S.merchant.treeId===undefined) S.merchant.treeId = "";
+  if(!S.walkQuest || typeof S.walkQuest !== "object") S.walkQuest = {date:"", distM:0, rewarded:0, coins:0, assetClaimed:false, assetId:""};
+  if(S.walkQuest.date===undefined) S.walkQuest.date = "";
+  if(S.walkQuest.distM===undefined) S.walkQuest.distM = 0;
+  if(S.walkQuest.rewarded===undefined) S.walkQuest.rewarded = 0;
+  if(S.walkQuest.coins===undefined) S.walkQuest.coins = S.walkQuest.rewarded * 10;
+  if(S.walkQuest.assetClaimed===undefined) S.walkQuest.assetClaimed = false;
+  if(S.walkQuest.assetId===undefined) S.walkQuest.assetId = "";
   if(S.pets) S.pets.forEach(normalizePet);
 }
 function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} scheduleSync(); }
@@ -906,6 +913,7 @@ function dailyReset(){
   var t = todayStr();
   if(S.merchant.date !== t){ S.merchant.date = t; S.merchant.buys = 0; S.merchant.items = []; }
   if(S.treatDay !== t){ S.treatDay = t; S.treatCount = 0; }
+  ensureWalkQuest();
 }
 function decayNeeds(){
   var now = Date.now(), mins = (now - (S.lastTick||now))/60000;
@@ -1901,6 +1909,92 @@ function openVet(){
     });
   });
 }
+/* ----- walking quests (Real GPS Map only) -----
+   Ryan's spec: every mile walked today pays a flat 10 Coins (so the day
+   totals 10 x miles) and heals the ACTIVE SET by 10% of each pet's max HP.
+   At 10 miles in a day, one bonus asset (rare or lower) drops, once per
+   day. Progress lives on the profile (S.walkQuest: UTC date, accumulated
+   meters, miles already rewarded, quest Coins, milestone flag) so it
+   survives reloads and spans multiple walks; ensureWalkQuest() zeroes it
+   whenever the UTC date rolls over — the game's daily reset. Rewards fire
+   live, mid-walk, the moment a whole-mile boundary is crossed. */
+var MILE_M = 1609.34; /* 1 mile in meters; the game tracks distance in m/km */
+function ensureWalkQuest(){
+  if(!S.walkQuest || typeof S.walkQuest !== "object") S.walkQuest = {date:"", distM:0, rewarded:0, coins:0, assetClaimed:false, assetId:""};
+  var q = S.walkQuest, t = todayStr();
+  if(q.date !== t){ q.date = t; q.distM = 0; q.rewarded = 0; q.coins = 0; q.assetClaimed = false; q.assetId = ""; }
+  return q;
+}
+/* Item rarity is derived from price — the item table carries no rarity
+   field. Bands: Common <=40 · Uncommon 41-70 · Rare 71-120 · Epic 121-250 ·
+   Legendary 251+. Price-0 items (Pass seeds) are Special, never drops. */
+function itemRarity(it){
+  if(!it || !(it.price > 0)) return "Special";
+  if(it.price <= 40) return "Common";
+  if(it.price <= 70) return "Uncommon";
+  if(it.price <= 120) return "Rare";
+  if(it.price <= 250) return "Epic";
+  return "Legendary";
+}
+/* The 10-mile pool: the game's universal assets (same kinds as the Yard's
+   COMMON_ASSETS finds) at Rare or lower — never Epic or Legendary. */
+var WALK_ASSET_POOL = ITEMS.filter(function(it){
+  return it.price > 0 && it.price <= 120 && ["toy","gear","food","hat","bowl","collar","background"].indexOf(it.kind) >= 0;
+});
+function grantWalkAsset(){
+  if(!WALK_ASSET_POOL.length) return null;
+  var it = rnd(WALK_ASSET_POOL);
+  S.inventory.push(it.id); /* same flat inventory as other asset finds — duplicates stack by count */
+  S.walkQuest.assetClaimed = true;
+  S.walkQuest.assetId = it.id;
+  toast("🎁 10 miles! You found: " + it.name + "!");
+  return it;
+}
+function onWalkDistance(deltaM){
+  if(!(deltaM > 0)) return;
+  var q = ensureWalkQuest();
+  q.distM += deltaM;
+  var due = Math.floor(q.distM / MILE_M);
+  while(q.rewarded < due){
+    q.rewarded++;
+    q.coins += 10;
+    S.coins += 10;
+    activePets().forEach(function(p){
+      if(p.status === "vet") return;      /* pets away at the vet are unaffected */
+      var cur = curHP(p);
+      if(cur <= 0) return;                /* a TKO'd pet (0 HP) is never revived by walking */
+      var mx = maxHP(p);
+      if(cur >= mx) return;               /* full-HP pets simply stay full */
+      var heal = Math.floor(mx * 0.10);
+      p.hp = Math.min(mx, cur + heal);
+    });
+    toast("🚶 Mile " + q.rewarded + " complete! +10 Coins · pets healed 10%");
+    if(q.rewarded >= 10 && !q.assetClaimed) grantWalkAsset();
+  }
+  save();
+  updateWalkQuestCard();
+}
+function walkQuestInnerHTML(){
+  var q = ensureWalkQuest();
+  var miles = q.distM / MILE_M;
+  var pct = Math.floor((miles - Math.floor(miles)) * 100);
+  var assetName = q.assetId && IT[q.assetId] ? IT[q.assetId].name : "";
+  var mile10 = q.assetClaimed
+    ? "10-mile reward: <b>" + esc(assetName || "Bonus asset") + "</b> claimed ✓"
+    : "10-mile reward: 🎁 bonus asset at 10 mi · <b>" + q.rewarded + " / 10</b>";
+  return '<h3 style="margin:0 0 6px">🚶 Walking Quest — today</h3>'
+    + '<div class="kv"><span>Walked today</span><b>' + miles.toFixed(2) + ' mi</b></div>'
+    + '<div class="kv"><span>Miles completed</span><b>' + q.rewarded + '</b></div>'
+    + '<div class="kv"><span>Quest Coins today</span><b>+' + q.coins + ' 🪙</b></div>'
+    + '<div class="meter" style="margin:10px 0 4px"><i style="width:' + pct + '%"></i></div>'
+    + '<p class="small muted" style="margin:0 0 6px">Next mile: ' + pct + '% — every mile pays <b>+10 Coins</b> and heals your active team <b>10%</b>.</p>'
+    + '<p class="small" style="margin:0">' + mile10 + '</p>'
+    + '<p class="small muted" style="margin:6px 0 0">Real GPS walks only · resets daily at 00:00 UTC.</p>';
+}
+function updateWalkQuestCard(){
+  var el = $("walkQuestCard");
+  if(el) el.innerHTML = walkQuestInnerHTML();
+}
 /* ----- GPS map ----- */
 function gpsInto(v){
   v.innerHTML = '<div id="gpsmap"></div>'
@@ -1911,7 +2005,8 @@ function gpsInto(v){
     + '<span class="chip">Total: '+(S.totalDist/1000).toFixed(2)+' km</span></div>'
     + '<p class="small muted" id="gpsMsg" style="margin:8px 0 0">Tap <b>Find me</b> — location is asked for from your tap, the way phones require. Businesses within ~800 m become trivia nodes; trees can be claimed; clinics &amp; pharmacies are vet points.</p>'
     + (S.walks.length ? '<details class="more"><summary>🚶 Walk history ('+S.walks.length+')</summary>' + S.walks.slice(-6).reverse().map(function(w){ return '<div class="kv"><span>'+esc(w.date)+'</span><b>'+(w.dist/1000).toFixed(2)+' km</b></div>'; }).join("") + '</details>' : '')
-    + '</div>';
+    + '</div>'
+    + '<div class="card" id="walkQuestCard" style="margin-top:12px">' + walkQuestInnerHTML() + '</div>';
   $("btnLocate").addEventListener("click", locateMe);
   $("btnWalk").addEventListener("click", toggleWalk);
   if(R.pos && window.L) drawGpsMap();
@@ -1937,7 +2032,7 @@ function startWatch(){
     R.acc = (typeof pos.coords.accuracy === "number") ? pos.coords.accuracy : R.acc;
     if(R.lastPos){
       var d = haversine(R.lastPos, p);
-      if(d > 2 && d < 500){ R.dist += d; }
+      if(d > 2 && d < 500){ R.dist += d; onWalkDistance(d); }
     }
     R.lastPos = p; R.pos = p;
     fetchOverpass();
@@ -2784,7 +2879,7 @@ function renderGuide(){
   html += guideSection("🌿", "The Yard — care & play",
     "All hands-on pet time happens in the Yard, with your current pet standing in its own scene. Six <b>care actions</b> — Feed, Play, Groom, Rest, Habitat, Bond — each feed one need. Every species has a natural <b>care routine</b>: do the actions <b>in order</b> and each one lands at full strength, building the chain. Break the order and the rest of that day caps at <b>75%</b>; a perfect routine unlocks a <b>100% care day</b>. Care quality also earns <b>Yard uses</b> for the pet's 3 species games (≤25% → 1 use, 26–50% → 2, 51–75% → 3, over 75% → 5). Games are true to the animal — dogs Fetch, Dig and Run — and the middle game can dig up Coins, and rarely, a found item.");
   html += guideSection("🗺️", "Walking & the Map",
-    "The world is full of <b>trivia nodes</b>: every business is one. Answer questions to earn Coins — White 10, Yellow 20, Green 30, Purple 50 — and correct answers heal your team a little and feed Pass points and lead-pet XP. Nodes rest between plays (higher tiers rest longer). <b>Trees</b> can be claimed as your own nodes (up to 5), which pay a bonus. The <b>traveling merchant</b> hides at an unclaimed tree with 3 items; his stock only changes when you buy, and you get 3 buys a day. The GPS map uses your real location; the Practice Map is a pocket neighborhood for testing.");
+    "The world is full of <b>trivia nodes</b>: every business is one. Answer questions to earn Coins — White 10, Yellow 20, Green 30, Purple 50 — and correct answers heal your team a little and feed Pass points and lead-pet XP. Nodes rest between plays (higher tiers rest longer). <b>Trees</b> can be claimed as your own nodes (up to 5), which pay a bonus. The <b>traveling merchant</b> hides at an unclaimed tree with 3 items; his stock only changes when you buy, and you get 3 buys a day. The GPS map uses your real location; the Practice Map is a pocket neighborhood for testing. <b>Walking quests (GPS only):</b> every mile you walk today pays +10 Coins and heals your active team 10% — reach 10 miles in a day for a bonus asset (rare or lower). Quest progress resets daily.");
   html += guideSection("🚨", "Battles & rescues",
     "You never fight animals — you fight <b>poachers</b>, as a team: every conscious pet on your active team battles together. Tap a pet to attack with its signature ability. <b>Battle XP equals the HP a pet has left standing</b> when the fight ends (TKO = 0), and each pet still standing at a rescue earns you a rescued animal. A TKO'd pet must go to the <b>vet</b> (check in free and wait, or pay for a fast heal), then rest before fighting again. Medpaks heal mid-battle; a 10-answer trivia streak earns a pet a <b>treat</b> that doubles its first strike.");
   html += guideSection("⭐", "Leveling & slots",
@@ -2823,7 +2918,7 @@ function renderSettings(){
     + '<div class="kv"><span>Profile ID</span><b style="font-size:12.5px;word-break:break-all;text-align:right;max-width:60%">'+esc(S.profileId)+'</b></div>'
     + '<div class="kv"><span>Recovery code</span><b>'+esc(S.recoveryCode)+'</b></div>'
     + '<p class="small muted">Keep your recovery code somewhere safe — it\'s how you get this profile back on another device.</p>'
-    + '<p class="small muted" style="margin:8px 0 0">Build: GPS zoom lock · Nov 22, 2026 · v22</p></div>'
+    + '<p class="small muted" style="margin:8px 0 0">Build: Walking quests · Nov 22, 2026 · v23</p></div>'
     + '<div class="card"><h3 style="margin:0 0 8px">☁️ Sync & session</h3>'
     + '<p class="small" id="syncDetail" style="margin:0 0 6px"></p>'
     + '<p class="small" style="margin:0 0 10px">Session: <b id="sessText"></b></p>'
