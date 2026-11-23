@@ -1658,7 +1658,21 @@ async function careWithAnim(pet, action){
 
 /* ================= MAP TAB — walk, nodes, trivia, merchant ================= */
 var mapSeg = "practice";
-var R = { map:null, layer:null, meMarker:null, watchId:null, walking:false, dist:0, lastPos:null, pos:null, nodes:[], loaded:false, perm:"", baseLayer:null, baseKind:"", poiBusy:false, poiAgain:false, poiAgainForce:false, lastPoiAt:null, lastPoiCell:"" };
+var R = { map:null, layer:null, meMarker:null, watchId:null, walking:false, dist:0, lastPos:null, pos:null, acc:null, nodes:[], loaded:false, perm:"", baseLayer:null, baseKind:"", poiBusy:false, poiAgain:false, poiAgainForce:false, lastPoiAt:null, lastPoiCell:"" };
+/* GPS map zoom lock (Ryan's ruling, v22): the map opens at street level
+   (zoom 16) and may zoom IN from there, but never OUT past it — so the
+   only nodes a player can ever see or reach are the ones in view at the
+   standard zoom. GPS_ZOOM is both the opening zoom and the minZoom
+   floor, applied to the Leaflet map and every base layer. */
+var GPS_ZOOM = 16;
+/* Node play radius: a node is playable only within 40 m of the player's
+   real position, relaxing to 75 m when the GPS fix itself is coarse
+   (reported accuracy worse than 40 m). Out-of-range nodes still render
+   — they are the view at standard zoom — but tapping one only explains
+   the distance; it never opens trivia, a claim, or the merchant. */
+function nodePlayRadius(){
+  return (typeof R.acc === "number" && isFinite(R.acc) && R.acc > 40) ? 75 : 40;
+}
 function tierFor(node){
   if(node.own) return "White";
   var h = 0; for(var i=0;i<node.id.length;i++) h += node.id.charCodeAt(i);
@@ -1908,6 +1922,7 @@ function locateMe(){
   if(msg) msg.textContent = "Asking the phone for your location…";
   navigator.geolocation.getCurrentPosition(function(pos){
     R.pos = {lat: pos.coords.latitude, lon: pos.coords.longitude};
+    R.acc = (typeof pos.coords.accuracy === "number") ? pos.coords.accuracy : null;
     drawGpsMap(); fetchOverpass({force:true});
     if(R.walking && R.watchId === null) startWatch();
   }, function(err){
@@ -1919,6 +1934,7 @@ function startWatch(){
   if(!navigator.geolocation || R.watchId !== null) return;
   R.watchId = navigator.geolocation.watchPosition(function(pos){
     var p = {lat: pos.coords.latitude, lon: pos.coords.longitude};
+    R.acc = (typeof pos.coords.accuracy === "number") ? pos.coords.accuracy : R.acc;
     if(R.lastPos){
       var d = haversine(R.lastPos, p);
       if(d > 2 && d < 500){ R.dist += d; }
@@ -1993,7 +2009,7 @@ function addOsmFallbackLayer(){
   if(!R.map) return;
   if(R.baseLayer){ try{ R.map.removeLayer(R.baseLayer); }catch(e){} R.baseLayer = null; }
   R.baseKind = "osm-raster-fallback";
-  R.baseLayer = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {maxZoom:19, attribution:"© OpenStreetMap contributors"}).addTo(R.map);
+  R.baseLayer = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {minZoom:GPS_ZOOM, maxZoom:19, attribution:"© OpenStreetMap contributors"}).addTo(R.map);
 }
 function addBaseLayer(){
   if(!R.map) return;
@@ -2007,6 +2023,7 @@ function addBaseLayer(){
   try{ gl.addTo(R.map); }catch(e){ addOsmFallbackLayer(); return; }
   var glMap = null;
   try{ glMap = (typeof gl.getMaplibreMap === "function") ? gl.getMaplibreMap() : (gl._glMap || null); }catch(e){}
+  if(glMap && typeof glMap.setMinZoom === "function"){ try{ glMap.setMinZoom(GPS_ZOOM); }catch(e){} }
   if(glMap && typeof glMap.on === "function"){
     var settled = false;
     var timer = setTimeout(function(){ if(!settled){ settled = true; addOsmFallbackLayer(); } }, 9000);
@@ -2031,11 +2048,12 @@ function drawGpsMap(){
     }
   }
   if(!R.map){
-    R.map = L.map("gpsmap").setView([R.pos.lat, R.pos.lon], 16);
+    R.map = L.map("gpsmap", {minZoom: GPS_ZOOM, maxZoom: 19}).setView([R.pos.lat, R.pos.lon], GPS_ZOOM);
     addBaseLayer();
     R.layer = L.layerGroup().addTo(R.map);
   } else {
-    R.map.setView([R.pos.lat, R.pos.lon], 16);
+    if(typeof R.map.setMinZoom === "function") R.map.setMinZoom(GPS_ZOOM);
+    R.map.setView([R.pos.lat, R.pos.lon], GPS_ZOOM);
     setTimeout(function(){ if(R.map) R.map.invalidateSize(); }, 60);
   }
   R.layer.clearLayers();
@@ -2051,6 +2069,20 @@ function drawGpsMap(){
 }
 function gpsNodeTap(n){
   if(n.kind === "vet"){ openVet(); return; }
+  /* Tap gate (v22): trivia, tree claims, own-node play and the merchant
+     only trigger inside the play radius of the player's real position.
+     A farther tap is not an error — it reports the distance on the
+     status line and as a toast, and nothing opens. */
+  if(R.pos){
+    var radius = nodePlayRadius();
+    var dist = haversine(R.pos, n);
+    if(dist > radius){
+      toast("📍 Too far — " + n.name + " is " + Math.round(dist) + " m away. Nodes play within " + radius + " m of you.");
+      var msg = $("gpsMsg");
+      if(msg) msg.textContent = "Too far: " + n.name + " is " + Math.round(dist) + " m away — walk within " + radius + " m of a node to play it.";
+      return;
+    }
+  }
   if(n.kind === "tree"){
     if(S.ownNodes.indexOf(n.id) >= 0){ openTrivia({id:n.id, name:n.name, own:true}); return; }
     if(S.merchant.treeId === n.id){ openMerchant(); return; }
@@ -2791,7 +2823,7 @@ function renderSettings(){
     + '<div class="kv"><span>Profile ID</span><b style="font-size:12.5px;word-break:break-all;text-align:right;max-width:60%">'+esc(S.profileId)+'</b></div>'
     + '<div class="kv"><span>Recovery code</span><b>'+esc(S.recoveryCode)+'</b></div>'
     + '<p class="small muted">Keep your recovery code somewhere safe — it\'s how you get this profile back on another device.</p>'
-    + '<p class="small muted" style="margin:8px 0 0">Build: Yard swap + PFP fit · Nov 22, 2026 · v21</p></div>'
+    + '<p class="small muted" style="margin:8px 0 0">Build: GPS zoom lock · Nov 22, 2026 · v22</p></div>'
     + '<div class="card"><h3 style="margin:0 0 8px">☁️ Sync & session</h3>'
     + '<p class="small" id="syncDetail" style="margin:0 0 6px"></p>'
     + '<p class="small" style="margin:0 0 10px">Session: <b id="sessText"></b></p>'
