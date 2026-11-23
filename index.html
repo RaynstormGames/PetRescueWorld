@@ -1667,19 +1667,27 @@ async function careWithAnim(pet, action){
 /* ================= MAP TAB — walk, nodes, trivia, merchant ================= */
 var mapSeg = "practice";
 var R = { map:null, layer:null, meMarker:null, watchId:null, walking:false, dist:0, lastPos:null, pos:null, acc:null, nodes:[], loaded:false, perm:"", baseLayer:null, baseKind:"", poiBusy:false, poiAgain:false, poiAgainForce:false, lastPoiAt:null, lastPoiCell:"" };
-/* GPS map zoom lock (Ryan's ruling, v22): the map opens at street level
-   (zoom 16) and may zoom IN from there, but never OUT past it — so the
-   only nodes a player can ever see or reach are the ones in view at the
-   standard zoom. GPS_ZOOM is both the opening zoom and the minZoom
-   floor, applied to the Leaflet map and every base layer. */
+/* GPS map zoom lock (Ryan's ruling, v22; GL scale corrected in v24): the
+   map opens at street level (zoom 16) and may zoom IN from there, but
+   never OUT past it — so the only nodes a player can ever see are the
+   ones in view at the standard zoom. GPS_ZOOM is both the opening zoom
+   and the minZoom floor on the Leaflet map. The MapLibre GL base layer
+   runs one zoom level BELOW Leaflet's (the plugin syncs it to Leaflet
+   zoom − 1), so its floor is GPS_ZOOM − 1 — setting it to GPS_ZOOM
+   clamps the GL camera a full level too tight and fights the plugin's
+   sync. A zoomend snap-back guard on the Leaflet map also re-asserts
+   the floor after any zoom, whatever path produced it. */
 var GPS_ZOOM = 16;
-/* Node play radius: a node is playable only within 40 m of the player's
-   real position, relaxing to 75 m when the GPS fix itself is coarse
-   (reported accuracy worse than 40 m). Out-of-range nodes still render
-   — they are the view at standard zoom — but tapping one only explains
-   the distance; it never opens trivia, a claim, or the merchant. */
+/* Node reach (Ryan's ruling, v24 — replaces the v22 40/75 m rule): a
+   node is playable only within 25 m of the player's real position. The
+   effective reach is max(25 m, the GPS fix's own reported accuracy):
+   a good fix (25 m or better) gets exactly 25 m, and a rough fix widens
+   the reach to its own uncertainty so nodes stay playable. Out-of-range
+   nodes still render — they are the view at standard zoom — but tapping
+   one only explains the distance; it never opens trivia, a claim, or
+   the merchant. */
 function nodePlayRadius(){
-  return (typeof R.acc === "number" && isFinite(R.acc) && R.acc > 40) ? 75 : 40;
+  return (typeof R.acc === "number" && isFinite(R.acc) && R.acc > 25) ? R.acc : 25;
 }
 function tierFor(node){
   if(node.own) return "White";
@@ -2106,6 +2114,22 @@ function addOsmFallbackLayer(){
   R.baseKind = "osm-raster-fallback";
   R.baseLayer = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {minZoom:GPS_ZOOM, maxZoom:19, attribution:"© OpenStreetMap contributors"}).addTo(R.map);
 }
+/* Zoom lock for the MapLibre GL base layer. The GL layer renders one
+   zoom level below Leaflet's (the plugin syncs it to Leaflet zoom − 1),
+   so its min-zoom floor is GPS_ZOOM − 1, on its own scale. Applied the
+   moment the GL instance exists and again when its style loads, so the
+   floor survives style load/rebuild; the GL map's own zoom gestures are
+   disabled outright (Leaflet owns all interaction — the plugin already
+   creates it non-interactive, and this keeps the lock independent of
+   that default). */
+function applyGlZoomLock(glMap){
+  if(!glMap) return;
+  try{ if(typeof glMap.setMinZoom === "function") glMap.setMinZoom(GPS_ZOOM - 1); }catch(e){}
+  try{ if(glMap.scrollZoom && typeof glMap.scrollZoom.disable === "function") glMap.scrollZoom.disable(); }catch(e){}
+  try{ if(glMap.touchZoomRotate && typeof glMap.touchZoomRotate.disable === "function") glMap.touchZoomRotate.disable(); }catch(e){}
+  try{ if(glMap.doubleClickZoom && typeof glMap.doubleClickZoom.disable === "function") glMap.doubleClickZoom.disable(); }catch(e){}
+  try{ if(glMap.boxZoom && typeof glMap.boxZoom.disable === "function") glMap.boxZoom.disable(); }catch(e){}
+}
 function addBaseLayer(){
   if(!R.map) return;
   if(!(window.L && typeof L.maplibreGL === "function" && window.maplibregl)){ addOsmFallbackLayer(); return; }
@@ -2118,11 +2142,11 @@ function addBaseLayer(){
   try{ gl.addTo(R.map); }catch(e){ addOsmFallbackLayer(); return; }
   var glMap = null;
   try{ glMap = (typeof gl.getMaplibreMap === "function") ? gl.getMaplibreMap() : (gl._glMap || null); }catch(e){}
-  if(glMap && typeof glMap.setMinZoom === "function"){ try{ glMap.setMinZoom(GPS_ZOOM); }catch(e){} }
+  applyGlZoomLock(glMap);
   if(glMap && typeof glMap.on === "function"){
     var settled = false;
     var timer = setTimeout(function(){ if(!settled){ settled = true; addOsmFallbackLayer(); } }, 9000);
-    glMap.on("load", function(){ settled = true; clearTimeout(timer); });
+    glMap.on("load", function(){ settled = true; clearTimeout(timer); applyGlZoomLock(glMap); });
     glMap.on("error", function(){ if(!settled){ settled = true; clearTimeout(timer); addOsmFallbackLayer(); } });
   }
   /* No GL-map handle to watch: addTo() succeeded, so keep the GL layer. */
@@ -2144,6 +2168,9 @@ function drawGpsMap(){
   }
   if(!R.map){
     R.map = L.map("gpsmap", {minZoom: GPS_ZOOM, maxZoom: 19}).setView([R.pos.lat, R.pos.lon], GPS_ZOOM);
+    /* Snap-back guard: whatever path a zoom takes (control, pinch,
+       wheel, a layer quirk), the view never rests below street level. */
+    R.map.on("zoomend", function(){ if(R.map && R.map.getZoom() < GPS_ZOOM) R.map.setZoom(GPS_ZOOM); });
     addBaseLayer();
     R.layer = L.layerGroup().addTo(R.map);
   } else {
@@ -2904,7 +2931,7 @@ function renderGuide(){
     + '<p class="b" style="margin:8px 0 2px;font-size:16px">Created by Rayn &amp; Mallow</p>'
     + '<p style="margin:10px 0 2px"><b>Lead</b> — Rayn</p>'
     + '<p style="margin:2px 0"><b>Design, Art, Writing, Code &amp; Everything Else</b> — Mallow</p>'
-    + '<p class="small muted" style="margin:12px 0 0">Built on a production floor\'s worth of continuous improvement: efficiency, communication, quality, safety — and a lot of very good pets.</p>'
+    + '<p class="small muted" style="margin:12px 0 0">This game is built for the protection of all the animals of the world through the choices of its players.</p>'
     + '</div>';
   v.innerHTML = html;
 }
@@ -2918,7 +2945,7 @@ function renderSettings(){
     + '<div class="kv"><span>Profile ID</span><b style="font-size:12.5px;word-break:break-all;text-align:right;max-width:60%">'+esc(S.profileId)+'</b></div>'
     + '<div class="kv"><span>Recovery code</span><b>'+esc(S.recoveryCode)+'</b></div>'
     + '<p class="small muted">Keep your recovery code somewhere safe — it\'s how you get this profile back on another device.</p>'
-    + '<p class="small muted" style="margin:8px 0 0">Build: Walking quests · Nov 22, 2026 · v23</p></div>'
+    + '<p class="small muted" style="margin:8px 0 0">Build: 25 m reach + zoom lock fix · Nov 22, 2026 · v24</p></div>'
     + '<div class="card"><h3 style="margin:0 0 8px">☁️ Sync & session</h3>'
     + '<p class="small" id="syncDetail" style="margin:0 0 6px"></p>'
     + '<p class="small" style="margin:0 0 10px">Session: <b id="sessText"></b></p>'
