@@ -1342,6 +1342,14 @@ function renderKennel(){
 }
 
 /* ---------- PFP card ---------- */
+/* Natural width/height aspect of each species portrait (from the art
+   itself), so the PFP can fit wide pets (Dachshund, Sea Turtle) inside
+   the box by width as well as by height. */
+var PFP_ASPECT = {"abyssinian":0.701,"amur-leopard":0.96,"atlantic-puffin":0.641,"axolotl":0.929,"beagle":1.155,"bengal":0.911,"bernese":0.991,"betta":0.855,"border-collie":0.808,"british-shorthair":1.004,"budgerigar":0.533,"capybara":0.685,"cattle-dog":0.873,"cockatiel":0.473,"corgi":0.911,"dachshund":1.391,"domestic-shorthair-calico":0.835,"domestic-shorthair":1.042,"emperor-penguin":0.676,"fennec-fox":0.819,"ferret":0.723,"german-shepherd":0.788,"golden-retriever":1.085,"goldfish":0.775,"greater-flamingo":0.417,"guinea-pig":0.875,"hedgehog":0.908,"holland-lop":0.893,"husky":1.0,"koala":0.955,"labrador":0.967,"maine-coon":0.944,"meerkat":0.612,"pangolin":0.917,"persian":1.072,"pygmy-goat":0.75,"raccoon":0.962,"ragdoll":0.857,"red-panda":1.002,"river-otter":0.734,"scottish-fold":0.951,"sea-turtle":1.325,"siamese":0.806,"snowy-owl":0.759,"sphynx":0.766,"syrian-hamster":0.926,"three-toed-sloth":1.014,"tiger":0.746,"wombat":0.826};
+/* Hat height as a fraction of the pet display height (see hatHTML:
+   beanie ≈ 0.56 × 0.46, safari ≈ 0.44 × 0.46, party ≈ 0.78 × 0.46),
+   rounded up a touch so the fit cap always leaves headroom. */
+var PFP_HAT_RATIO = {"hat-beanie":0.27, "hat-safari":0.21, "hat-party":0.37};
 function hatHTML(itemId, disp){
   var w = Math.round(disp*0.46), bottom = Math.round(disp*0.86);
   var pos = 'position:absolute;left:50%;transform:translateX(-50%);bottom:'+bottom+'px;z-index:2;pointer-events:none;';
@@ -1353,7 +1361,28 @@ function hatHTML(itemId, disp){
 function profilePicHTML(pet, size){
   size = size || 300;
   var sp = SP[pet.speciesId], lv = levelOf(pet.speciesId), st = stageOf(lv);
-  var disp = Math.max(60, Math.round(size*0.86*st.factor + size*0.14));
+  /* Fit-inside scaling: the raw stage size (baby ≈55% · juvenile ≈78% ·
+     adult 100% of the box) used to push an adult pet — or its hat — past
+     the top/sides of the box, where overflow:hidden clipped it. Compute
+     the largest adult display height that keeps EVERY layer inside the
+     box with a small margin, then scale all stages by that same factor
+     so the baby < juvenile < adult progression is preserved and the
+     adult is capped at the fit size:
+       · pet top — the pet sits at bottom:13%, so 13% + height must fit;
+       · hat top — the hat sits at bottom:0.86×disp and rises above it;
+       · pet width — display height × the portrait's aspect must fit.
+     Bowls (4% + 15% wide, bottom 11%), the toy (11% wide, centered) and
+     the nameplate (bottom strip) already sit inside those margins. */
+  var rawDisp = size*0.86*st.factor + size*0.14;
+  var pfpMargin = Math.round(size*0.04);
+  var petKey = isCalico(sp, pet.uid) ? "domestic-shorthair-calico" : sp.id;
+  var aspect = PFP_ASPECT[petKey] || PFP_ASPECT[sp.id] || 1;
+  var fitCap = size - pfpMargin - Math.round(size*0.13);
+  var hatRatio = pet.equip.hat ? (PFP_HAT_RATIO[pet.equip.hat] || 0.37) : 0;
+  if(hatRatio) fitCap = Math.min(fitCap, (size - pfpMargin) / (0.86 + hatRatio));
+  fitCap = Math.min(fitCap, (size - 2*pfpMargin) / aspect);
+  var fitScale = Math.min(1, fitCap / size);   /* raw adult disp == size */
+  var disp = Math.max(40, Math.round(rawDisp * fitScale));
   var bgItem = pet.equip.background ? IT[pet.equip.background] : null;
   var bgName = bgItem ? bgItem.background : pet.favBg;
   var bgCss = BG_GRADIENTS[bgName] || BG_GRADIENTS["Meadow Dawn"];
@@ -1505,20 +1534,33 @@ async function yardPlay(pet, kind){
 }
 
 /* ================= YARD TAB — all care + play, for the CURRENT pet =================
-   The Yard always hosts the pet selected on the Main tab. Care actions
-   animate here against the pet's own props; games use its Yard uses. */
+   The Yard hosts the shared current pet — the same selection as Main.
+   Like Main, the Yard scene carries the active-team carousel (arrows +
+   swipe, via the shared carouselHTML / wireCarousel), so switching here
+   moves the shared currentUid and Main, the map marker, care and games
+   all follow the newly selected pet. Care actions animate here against
+   the pet's own props; games use its Yard uses. */
+function yardGo(d){
+  if(animBusy) return;   /* never swap mid-animation: the running care/play animation owns the scene and its pet */
+  var a = activePets(); if(a.length < 2) return;
+  var i = currentIdx();
+  i = (i + d + a.length) % a.length;
+  currentUid = a[i].uid;
+  render();
+}
 function renderYard(){
   var v = $("view");
   var pet = currentPet();
   if(!pet){ v.innerHTML = '<div class="card center"><h2>🎾 The Yard</h2><p>No pets yet — your starter will play here.</p></div>'; return; }
   var sp = SP[pet.speciesId], lv = levelOf(pet.speciesId);
+  var act = activePets(), idx = currentIdx();
   careToday(pet);
   var games = yardGamesFor(sp);
   var left = yardLeft(pet);
   var hunger = Math.round(pet.needs.hunger);
   var bc = bowlColor(pet);
   var unavailable = pet.status === "vet" || pet.status === "rest" || pet.status === "tko";
-  var html = '<p class="small" style="margin:0 0 8px">🌿 <b>In the Yard:</b> '+esc(petDisplayName(pet))+' the '+esc(sp.name)+' <span class="muted">(your current pet — swipe on the Main tab to bring a different pet here)</span></p>';
+  var html = '<p class="small" style="margin:0 0 8px">🌿 <b>In the Yard:</b> '+esc(petDisplayName(pet))+' the '+esc(sp.name)+' <span class="muted">(your current pet — use the arrows or swipe the scene to bring a different active pet here)</span></p>';
   var holeNow = digHole && Date.now() < digHole.until ? digHole : null;
   html += '<div class="scene" id="yscene"><div class="sky"></div><div class="sun"></div><div class="fence"></div><div class="grass"></div>'
     + '<div class="dirt" id="ydirt" style="left:'+(holeNow ? holeNow.left : 60)+'%;top:'+(holeNow ? holeNow.top : 66)+'%;width:90px;height:26px;opacity:'+(holeNow ? 1 : 0)+';transition:opacity .8s"></div>'
@@ -1528,7 +1570,7 @@ function renderYard(){
     + '<div class="prop bowl" id="yfood" style="right:5%;bottom:4.5%">'+bowlSVG(bc, hunger, "food")+'</div>'
     + '<div class="shimmer" id="yshimmer"></div>'
     + petWrapHTML(pet, "yard")
-    + '<div class="slotlabel">'+esc(petDisplayName(pet))+' · '+stageLabel(sp, lv)+'</div>'
+    + (act.length > 1 ? carouselHTML(idx, act.length, "Slot " + (idx+1) + (idx===0 ? " · Main pet" : "") + " — " + petDisplayName(pet) + " · " + stageLabel(sp, lv)) : '<div class="slotlabel">'+esc(petDisplayName(pet))+' · '+stageLabel(sp, lv)+'</div>')
     + '</div>';
   /* care panel — plain grid of actions, NO spelled-out routine: the order is
      discovered by doing and tracked on the Main tab. Only neutral feedback
@@ -1558,6 +1600,9 @@ function renderYard(){
     + '<button class="primary" data-yard="laps" '+((left<=0 || unavailable || animBusy) ? "disabled" : "")+' style="min-height:56px">🏃 '+esc(games[2])+'</button>'
     + '</div><p class="small muted" style="margin:8px 0 0">'+esc(games[1])+' can turn up a few Coins — and once in a while, something better.</p></div>';
   v.innerHTML = html;
+  var ystage = $("yscene");
+  wireCarousel(ystage, function(d){ yardGo(d); });
+  v.querySelectorAll("[data-car]").forEach(function(b){ b.addEventListener("click", function(){ yardGo(parseInt(b.getAttribute("data-car"),10)); }); });
   v.querySelectorAll("[data-care]").forEach(function(b){ b.addEventListener("click", function(){ careWithAnim(pet, b.getAttribute("data-care")); }); });
   v.querySelectorAll("[data-yard]").forEach(function(b){ b.addEventListener("click", function(){ yardPlay(pet, b.getAttribute("data-yard")); }); });
   if(holeNow){ /* fade the dug hole out when its 10 seconds are up */
@@ -2746,7 +2791,7 @@ function renderSettings(){
     + '<div class="kv"><span>Profile ID</span><b style="font-size:12.5px;word-break:break-all;text-align:right;max-width:60%">'+esc(S.profileId)+'</b></div>'
     + '<div class="kv"><span>Recovery code</span><b>'+esc(S.recoveryCode)+'</b></div>'
     + '<p class="small muted">Keep your recovery code somewhere safe — it\'s how you get this profile back on another device.</p>'
-    + '<p class="small muted" style="margin:8px 0 0">Build: Places GET fix · Nov 22, 2026 · v20</p></div>'
+    + '<p class="small muted" style="margin:8px 0 0">Build: Yard swap + PFP fit · Nov 22, 2026 · v21</p></div>'
     + '<div class="card"><h3 style="margin:0 0 8px">☁️ Sync & session</h3>'
     + '<p class="small" id="syncDetail" style="margin:0 0 6px"></p>'
     + '<p class="small" style="margin:0 0 10px">Session: <b id="sessText"></b></p>'
