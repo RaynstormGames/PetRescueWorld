@@ -8,6 +8,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Nunito:ital,wght@0,400;0,600;0,700;0,800;1,400&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
 <style>
 :root{
   color-scheme: light dark;
@@ -235,6 +236,8 @@ nav.tabs .ic{font-size:21px; line-height:1.15}
 .seg button{flex:1; border:none; background:transparent; border-radius:999px; padding:9px 4px; font-weight:800; font-size:14.5px; color:var(--ink2); min-height:44px}
 .seg button.on{background:var(--green); color:#fff}
 #gpsmap{height:340px; border-radius:20px; border:3px solid var(--line); overflow:hidden; z-index:1}
+#gpsmap .maplibregl-map{position:absolute; inset:0}
+#gpsmap .maplibregl-canvas{outline:none}
 .mapicon{background:transparent; border:none; font-size:25px; text-align:center; filter:drop-shadow(0 2px 2px rgba(0,0,0,.4))}
 .petmarker-wrap{background:transparent; border:none}
 .petmark{position:relative; width:52px; height:52px; pointer-events:none}
@@ -280,6 +283,8 @@ details.more{margin-top:8px} details.more summary{cursor:pointer; font-weight:80
 <div id="sessionRoot"></div>
 <div id="toastRoot"></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.0.22/leaflet-maplibre-gl.js"></script>
 <script>
 /* ============================================================
    PetRescueWorld — SECRETS FILE
@@ -298,7 +303,11 @@ details.more{margin-top:8px} details.more summary{cursor:pointer; font-weight:80
    One value per line. Edit only the values, nothing else.
    ============================================================ */
 window.PRW_SECRETS = {
-  DB_MANAGER_URL: ""
+  DB_MANAGER_URL: "",
+  /* Places reliability net: paste a Geoapify API key (locked to this
+     site) to enable the Geoapify fallback when every Overpass mirror
+     fails. Leave empty ("") to run Overpass-rotation only. */
+  GEOAPIFY_KEY: ""
 };
 </script><script>
 /* ================= DATA (carried over from the game data tables) ================= */
@@ -1558,7 +1567,7 @@ async function careWithAnim(pet, action){
 
 /* ================= MAP TAB — walk, nodes, trivia, merchant ================= */
 var mapSeg = "practice";
-var R = { map:null, layer:null, meMarker:null, watchId:null, walking:false, dist:0, lastPos:null, pos:null, nodes:[], loaded:false, perm:"" };
+var R = { map:null, layer:null, meMarker:null, watchId:null, walking:false, dist:0, lastPos:null, pos:null, nodes:[], loaded:false, perm:"", baseLayer:null, baseKind:"", poiBusy:false, poiAgain:false, poiAgainForce:false, lastPoiAt:null, lastPoiCell:"" };
 function tierFor(node){
   if(node.own) return "White";
   var h = 0; for(var i=0;i<node.id.length;i++) h += node.id.charCodeAt(i);
@@ -1808,7 +1817,7 @@ function locateMe(){
   if(msg) msg.textContent = "Asking the phone for your location…";
   navigator.geolocation.getCurrentPosition(function(pos){
     R.pos = {lat: pos.coords.latitude, lon: pos.coords.longitude};
-    drawGpsMap(); fetchOverpass();
+    drawGpsMap(); fetchOverpass({force:true});
     if(R.walking && R.watchId === null) startWatch();
   }, function(err){
     var m = err.code === 1 ? "Location permission was denied — check the browser's site settings, or use the Practice Map." : err.code === 3 ? "Location timed out — try again outdoors." : "Location unavailable right now.";
@@ -1824,6 +1833,7 @@ function startWatch(){
       if(d > 2 && d < 500){ R.dist += d; }
     }
     R.lastPos = p; R.pos = p;
+    fetchOverpass();
     var chip = document.querySelector("#view .chip");
     if(R.map){ R.map.panTo([p.lat, p.lon]); updatePlayerMarker(); }
     renderWalkChip();
@@ -1884,12 +1894,42 @@ function updatePlayerMarker(){
     R.meMarker.setPopupContent(playerPopup());
   }
 }
+/* Base layer: OpenFreeMap vector tiles (Liberty style) rendered through
+   MapLibre GL on top of Leaflet. If the GL layer cannot initialize or its
+   style does not load in time, fall back to the previous OSM raster tiles
+   so the map is never blank. */
+function addOsmFallbackLayer(){
+  if(!R.map) return;
+  if(R.baseLayer){ try{ R.map.removeLayer(R.baseLayer); }catch(e){} R.baseLayer = null; }
+  R.baseKind = "osm-raster-fallback";
+  R.baseLayer = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {maxZoom:19, attribution:"© OpenStreetMap contributors"}).addTo(R.map);
+}
+function addBaseLayer(){
+  if(!R.map) return;
+  if(!(window.L && typeof L.maplibreGL === "function" && window.maplibregl)){ addOsmFallbackLayer(); return; }
+  var gl = null;
+  try{
+    gl = L.maplibreGL({ style: "https://tiles.openfreemap.org/styles/liberty", attribution: "OpenFreeMap © OpenMapTiles © OpenStreetMap contributors" });
+  }catch(e){ addOsmFallbackLayer(); return; }
+  R.baseKind = "openfreemap-gl";
+  R.baseLayer = gl;
+  try{ gl.addTo(R.map); }catch(e){ addOsmFallbackLayer(); return; }
+  var glMap = null;
+  try{ glMap = (typeof gl.getMaplibreMap === "function") ? gl.getMaplibreMap() : (gl._glMap || null); }catch(e){}
+  if(glMap && typeof glMap.on === "function"){
+    var settled = false;
+    var timer = setTimeout(function(){ if(!settled){ settled = true; addOsmFallbackLayer(); } }, 9000);
+    glMap.on("load", function(){ settled = true; clearTimeout(timer); });
+    glMap.on("error", function(){ if(!settled){ settled = true; clearTimeout(timer); addOsmFallbackLayer(); } });
+  }
+  /* No GL-map handle to watch: addTo() succeeded, so keep the GL layer. */
+}
 function drawGpsMap(){
   if(!window.L || !R.pos) return;
   var el = $("gpsmap"); if(!el) return;
   if(!R.map){
     R.map = L.map("gpsmap").setView([R.pos.lat, R.pos.lon], 16);
-    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {maxZoom:19, attribution:"© OpenStreetMap"}).addTo(R.map);
+    addBaseLayer();
     R.layer = L.layerGroup().addTo(R.map);
   } else {
     R.map.setView([R.pos.lat, R.pos.lon], 16);
@@ -1919,27 +1959,170 @@ function gpsNodeTap(n){
   }
   openTrivia({id:n.id, name:n.name, own:false});
 }
-function fetchOverpass(){
-  if(!R.pos) return;
-  var q = '[out:json][timeout:25];(node["shop"](around:800,' + R.pos.lat + ',' + R.pos.lon + ');'
-    + 'node["amenity"~"cafe|restaurant|fast_food|pharmacy|veterinary|clinic|hospital|library|marketplace"](around:800,' + R.pos.lat + ',' + R.pos.lon + ');'
-    + 'node["natural"="tree"](around:800,' + R.pos.lat + ',' + R.pos.lon + '););out body 140;';
-  fetch("https://overpass-api.de/api/interpreter", {method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"}, body:"data=" + encodeURIComponent(q)})
-  .then(function(r){ return r.json(); })
-  .then(function(j){
-    R.nodes = (j.elements || []).map(function(e){
-      var t = e.tags || {};
-      var kind = t.natural === "tree" ? "tree" : (t.amenity === "veterinary" || t.amenity === "pharmacy" || t.amenity === "clinic" || t.amenity === "hospital") ? "vet" : "biz";
-      return {id:"osm-" + e.id, name: t.name || (kind === "tree" ? "Street tree" : kind === "vet" ? "Care point" : "Local business"), kind:kind, lat:e.lat, lon:e.lon};
-    });
-    R.loaded = true;
-    drawGpsMap();
-    var msg = $("gpsMsg");
-    if(msg) msg.textContent = "Found " + R.nodes.length + " places near you. Tap a ❓ for trivia, 🌳 to claim a tree, 🏥 for vet care.";
+/* ================= PLACES (POI) — Overpass rotation + cache + Geoapify slot =================
+   Endpoints are tried in order, ONE attempt each, moving on ONLY on failure
+   (network error, non-200, 429, 504, timeout, unparseable body). Query
+   discipline: fetch only after moving >350 m from the last successful query
+   point (or on an explicit Find me refresh), one request in flight at a
+   time, ~28 s abort per attempt, and a 24 h per-cell cache in localStorage
+   (key prw_poi_cache_v1 — separate from the profile keys). */
+var OVERPASS_ENDPOINTS = [
+  "https://overpass.private.coffee/api/interpreter",
+  "https://overpass-api.de/api/interpreter",
+  "https://maps.mail.ru/osm/tools/overpass/api/interpreter"
+];
+var POI_CACHE_KEY = "prw_poi_cache_v1";
+var POI_CACHE_TTL = 24 * 3600 * 1000;
+function poiCellKey(pos){
+  return Math.floor(pos.lat / 0.005) + "_" + Math.floor(pos.lon / 0.005);
+}
+function poiCacheReadAll(){
+  try{ var raw = localStorage.getItem(POI_CACHE_KEY); var o = raw ? JSON.parse(raw) : null; return (o && typeof o === "object") ? o : {}; }catch(e){ return {}; }
+}
+function poiCacheGet(pos, ignoreTTL){
+  var all = poiCacheReadAll();
+  var ent = all[poiCellKey(pos)];
+  if(!ent || !ent.nodes) return null;
+  if(!ignoreTTL && (Date.now() - (ent.ts || 0)) > POI_CACHE_TTL) return null;
+  return ent.nodes;
+}
+function poiCacheSet(pos, nodes){
+  try{
+    var all = poiCacheReadAll();
+    var now = Date.now();
+    Object.keys(all).forEach(function(k){ if(now - (all[k].ts || 0) > POI_CACHE_TTL) delete all[k]; });
+    all[poiCellKey(pos)] = { ts: now, nodes: nodes };
+    localStorage.setItem(POI_CACHE_KEY, JSON.stringify(all));
+  }catch(e){}
+}
+function geoapifyKey(){
+  try{
+    var k = (typeof window !== "undefined" && window.PRW_SECRETS && typeof window.PRW_SECRETS.GEOAPIFY_KEY === "string") ? window.PRW_SECRETS.GEOAPIFY_KEY.trim() : "";
+    return k;
+  }catch(e){ return ""; }
+}
+function applyPoiNodes(nodes){
+  R.nodes = nodes;
+  R.loaded = true;
+  drawGpsMap();
+  var msg = $("gpsMsg");
+  if(msg) msg.textContent = "Found " + R.nodes.length + " places near you. Tap a ❓ for trivia, 🌳 to claim a tree, 🏥 for vet care.";
+}
+function poiFetchWithTimeout(url, options, ms){
+  var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+  var timer = null;
+  if(ctrl){
+    options = options || {};
+    options.signal = ctrl.signal;
+    timer = setTimeout(function(){ try{ ctrl.abort(); }catch(e){} }, ms);
+  }
+  return fetch(url, options).then(function(r){ if(timer) clearTimeout(timer); return r; }, function(err){ if(timer) clearTimeout(timer); throw err; });
+}
+function overpassQuery(lat, lon){
+  var keys = ["amenity", "shop", "tourism", "leisure", "office"];
+  var clauses = "";
+  keys.forEach(function(k){
+    clauses += 'node["' + k + '"]["name"](around:800,' + lat + ',' + lon + ');'
+             + 'way["' + k + '"]["name"](around:800,' + lat + ',' + lon + ');';
+  });
+  /* Street trees stay in the union (unnamed, as before) so GPS tree
+     claiming keeps working exactly as it did on the single-endpoint build. */
+  clauses += 'node["natural"="tree"](around:800,' + lat + ',' + lon + ');';
+  return '[out:json][timeout:25];(' + clauses + ');out center 50;';
+}
+function mapOverpassElements(elements){
+  var seen = {}, out = [];
+  (elements || []).forEach(function(e){
+    var lat = (typeof e.lat === "number") ? e.lat : (e.center && typeof e.center.lat === "number" ? e.center.lat : null);
+    var lon = (typeof e.lon === "number") ? e.lon : (e.center && typeof e.center.lon === "number" ? e.center.lon : null);
+    if(lat === null || lon === null) return;
+    var id = (e.type === "way") ? "osm-way-" + e.id : "osm-" + e.id;
+    if(seen[id]) return;
+    seen[id] = true;
+    var tg = e.tags || {};
+    var kind = tg.natural === "tree" ? "tree" : (tg.amenity === "veterinary" || tg.amenity === "pharmacy" || tg.amenity === "clinic" || tg.amenity === "hospital") ? "vet" : "biz";
+    out.push({id:id, name: tg.name || (kind === "tree" ? "Street tree" : kind === "vet" ? "Care point" : "Local business"), kind:kind, lat:lat, lon:lon});
+  });
+  return out;
+}
+function tryOverpassEndpoint(idx, q, done){
+  if(idx >= OVERPASS_ENDPOINTS.length){ done(null); return; }
+  poiFetchWithTimeout(OVERPASS_ENDPOINTS[idx], {method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"}, body:"data=" + encodeURIComponent(q)}, 28000)
+  .then(function(r){
+    if(!r.ok) throw new Error("http " + r.status);
+    return r.json();
   })
-  .catch(function(){
-    var msg = $("gpsMsg");
-    if(msg) msg.textContent = "Couldn't load nearby places (the map service didn't answer). The Practice Map still works fully.";
+  .then(function(j){
+    if(!j || !Array.isArray(j.elements)) throw new Error("unparseable");
+    done(mapOverpassElements(j.elements));
+  })
+  .catch(function(){ tryOverpassEndpoint(idx + 1, q, done); });
+}
+function fetchGeoapifyPlaces(done){
+  var key = geoapifyKey();
+  if(!key){ done(null); return; }
+  var url = "https://api.geoapify.com/v2/places?categories=commercial,service,catering,leisure,tourism,healthcare"
+    + "&filter=circle:" + R.pos.lon + "," + R.pos.lat + ",800&limit=50&apiKey=" + encodeURIComponent(key);
+  poiFetchWithTimeout(url, {method:"GET"}, 28000)
+  .then(function(r){ if(!r.ok) throw new Error("http " + r.status); return r.json(); })
+  .then(function(j){
+    var feats = (j && Array.isArray(j.features)) ? j.features : null;
+    if(!feats) throw new Error("unparseable");
+    var seen = {}, out = [];
+    feats.forEach(function(f, i){
+      var p = f.properties || {};
+      var coords = (f.geometry && Array.isArray(f.geometry.coordinates)) ? f.geometry.coordinates : null;
+      var lon = (typeof p.lon === "number") ? p.lon : (coords ? coords[0] : null);
+      var lat = (typeof p.lat === "number") ? p.lat : (coords ? coords[1] : null);
+      if(typeof lat !== "number" || typeof lon !== "number") return;
+      var id = "geoapify-" + (p.place_id || i);
+      if(seen[id]) return;
+      seen[id] = true;
+      var cats = Array.isArray(p.categories) ? p.categories : [];
+      var isVet = cats.some(function(c){ return c === "healthcare.pharmacy" || c === "healthcare.veterinary" || c.indexOf("healthcare.pharmacy") === 0 || c.indexOf("healthcare.veterinary") === 0; });
+      var kind = isVet ? "vet" : "biz";
+      out.push({id:id, name: p.name || (kind === "vet" ? "Care point" : "Local business"), kind:kind, lat:lat, lon:lon});
+    });
+    done(out);
+  })
+  .catch(function(){ done(null); });
+}
+function fetchOverpass(opts){
+  if(!R.pos) return;
+  var force = !!(opts && opts.force);
+  if(R.poiBusy){ R.poiAgain = true; if(force) R.poiAgainForce = true; return; }
+  var cell = poiCellKey(R.pos);
+  var cached = poiCacheGet(R.pos, false);
+  if(cached){
+    if(cell !== R.lastPoiCell || !R.loaded){ R.lastPoiCell = cell; R.lastPoiAt = {lat:R.pos.lat, lon:R.pos.lon}; applyPoiNodes(cached); }
+    return;
+  }
+  if(!force && R.lastPoiAt && haversine(R.lastPoiAt, R.pos) <= 350) return;
+  R.poiBusy = true;
+  var at = {lat:R.pos.lat, lon:R.pos.lon};
+  var q = overpassQuery(at.lat, at.lon);
+  var finish = function(){
+    R.poiBusy = false;
+    if(R.poiAgain){ var f = R.poiAgainForce; R.poiAgain = false; R.poiAgainForce = false; fetchOverpass({force:f}); }
+  };
+  var succeed = function(nodes){
+    R.lastPoiAt = at; R.lastPoiCell = poiCellKey(at);
+    poiCacheSet(at, nodes);
+    applyPoiNodes(nodes);
+    finish();
+  };
+  tryOverpassEndpoint(0, q, function(nodes){
+    if(nodes){ succeed(nodes); return; }
+    fetchGeoapifyPlaces(function(gnodes){
+      if(gnodes){ succeed(gnodes); return; }
+      var stale = poiCacheGet(at, true);
+      if(stale){ R.lastPoiCell = poiCellKey(at); applyPoiNodes(stale); }
+      else {
+        var msg = $("gpsMsg");
+        if(msg) msg.textContent = "Couldn't load nearby places (the map service didn't answer). The Practice Map still works fully.";
+      }
+      finish();
+    });
   });
 }
 function renderMap(){
@@ -2405,7 +2588,7 @@ function renderSettings(){
     + '<div class="kv"><span>Profile ID</span><b style="font-size:12.5px;word-break:break-all;text-align:right;max-width:60%">'+esc(S.profileId)+'</b></div>'
     + '<div class="kv"><span>Recovery code</span><b>'+esc(S.recoveryCode)+'</b></div>'
     + '<p class="small muted">Keep your recovery code somewhere safe — it\'s how you get this profile back on another device.</p>'
-    + '<p class="small muted" style="margin:8px 0 0">Build: Pet marker · Nov 22, 2026 · v14</p></div>'
+    + '<p class="small muted" style="margin:8px 0 0">Build: Maps update · Nov 22, 2026 · v15</p></div>'
     + '<div class="card"><h3 style="margin:0 0 8px">☁️ Sync & session</h3>'
     + '<p class="small" id="syncDetail" style="margin:0 0 6px"></p>'
     + '<p class="small" style="margin:0 0 10px">Session: <b id="sessText"></b></p>'
