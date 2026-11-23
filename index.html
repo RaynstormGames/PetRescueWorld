@@ -2019,7 +2019,9 @@ function gpsNodeTap(n){
 }
 /* ================= PLACES (POI) — Overpass rotation + cache + Geoapify slot =================
    Endpoints are tried in order, ONE attempt each, moving on ONLY on failure
-   (network error, non-200, 429, 504, timeout, unparseable body). Query
+   (network error, non-200, 429, 504, timeout, unparseable body, or a
+   200 whose elements map to zero usable nodes — an empty result is a
+   failure, never a rendered "success"). Query
    discipline: fetch only after moving >350 m from the last successful query
    point (or on an explicit Find me refresh), one request in flight at a
    time, ~15 s abort per attempt, and a 24 h per-cell cache in localStorage
@@ -2043,6 +2045,9 @@ function poiCacheGet(pos, ignoreTTL){
   var all = poiCacheReadAll();
   var ent = all[poiCellKey(pos)];
   if(!ent || !ent.nodes) return null;
+  /* An empty cached set is never a usable result (a v15-era entry could
+     hold one): it must not suppress a fresh fetch, fresh or stale. */
+  if(!ent.nodes.length) return null;
   if(!ignoreTTL && (Date.now() - (ent.ts || 0)) > POI_CACHE_TTL) return null;
   return ent.nodes;
 }
@@ -2139,8 +2144,8 @@ function applyPoiNodes(nodes, opts){
   drawGpsMap();
   var msg = $("gpsMsg");
   if(msg) msg.textContent = (opts && opts.scatter)
-    ? "Showing trail nodes for this area. Tap a ❓ for trivia."
-    : "Found " + R.nodes.length + " places near you. Tap a ❓ for trivia, 🌳 to claim a tree, 🏥 for vet care.";
+    ? "Showing trail nodes for this area. Tap a ❓ for trivia. Places: trail nodes (places service unreachable)"
+    : "Found " + R.nodes.length + " places near you. Tap a ❓ for trivia, 🌳 to claim a tree, 🏥 for vet care. Places: " + ((opts && opts.source) || "live map data");
 }
 function poiFetchWithTimeout(url, options, ms){
   var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
@@ -2181,14 +2186,23 @@ function mapOverpassElements(elements){
 }
 function tryOverpassEndpoint(idx, q, done){
   if(idx >= OVERPASS_ENDPOINTS.length){ done(null); return; }
-  poiFetchWithTimeout(OVERPASS_ENDPOINTS[idx], {method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"}, body:"data=" + encodeURIComponent(q)}, 15000)
+  /* GET with the query in ?data= (not POST): the shaped query succeeds
+     reliably over GET, and GET removes a whole class of mobile-carrier /
+     CORS-preflight / POST-body failures seen on phones. */
+  poiFetchWithTimeout(OVERPASS_ENDPOINTS[idx] + "?data=" + encodeURIComponent(q), {method:"GET"}, 15000)
   .then(function(r){
     if(!r.ok) throw new Error("http " + r.status);
     return r.json();
   })
   .then(function(j){
     if(!j || !Array.isArray(j.elements)) throw new Error("unparseable");
-    done(mapOverpassElements(j.elements));
+    var mapped = mapOverpassElements(j.elements);
+    /* An HTTP-200 with zero usable elements is NO RESULT, not a success:
+       throwing here advances the rotation to the next endpoint, and if
+       every layer comes back empty the chain ends at the scatter
+       fallback instead of rendering an empty map as a "success". */
+    if(!mapped.length) throw new Error("empty result");
+    done(mapped);
   })
   .catch(function(){ tryOverpassEndpoint(idx + 1, q, done); });
 }
@@ -2217,6 +2231,9 @@ function fetchGeoapifyPlaces(done){
       var kind = isVet ? "vet" : "biz";
       out.push({id:id, name: p.name || (kind === "vet" ? "Care point" : "Local business"), kind:kind, lat:lat, lon:lon});
     });
+    /* Zero usable features is no result — fall through (to cache /
+       scatter) rather than rendering an empty map as a success. */
+    if(!out.length) throw new Error("empty result");
     done(out);
   })
   .catch(function(){ done(null); });
@@ -2228,7 +2245,7 @@ function fetchOverpass(opts){
   var cell = poiCellKey(R.pos);
   var cached = poiCacheGet(R.pos, false);
   if(cached){
-    if(cell !== R.lastPoiCell || !R.loaded){ R.lastPoiCell = cell; R.lastPoiAt = {lat:R.pos.lat, lon:R.pos.lon}; applyPoiNodes(cached); }
+    if(cell !== R.lastPoiCell || !R.loaded){ R.lastPoiCell = cell; R.lastPoiAt = {lat:R.pos.lat, lon:R.pos.lon}; applyPoiNodes(cached, {source:"saved area"}); }
     return;
   }
   if(!force && R.lastPoiAt && haversine(R.lastPoiAt, R.pos) <= 350) return;
@@ -2239,18 +2256,18 @@ function fetchOverpass(opts){
     R.poiBusy = false;
     if(R.poiAgain){ var f = R.poiAgainForce; R.poiAgain = false; R.poiAgainForce = false; fetchOverpass({force:f}); }
   };
-  var succeed = function(nodes){
+  var succeed = function(nodes, source){
     R.lastPoiAt = at; R.lastPoiCell = poiCellKey(at);
-    poiCacheSet(at, nodes);
-    applyPoiNodes(nodes);
+    if(nodes && nodes.length) poiCacheSet(at, nodes);
+    applyPoiNodes(nodes, {source: source || "live map data"});
     finish();
   };
   tryOverpassEndpoint(0, q, function(nodes){
-    if(nodes){ succeed(nodes); return; }
+    if(nodes && nodes.length){ succeed(nodes, "live map data"); return; }
     fetchGeoapifyPlaces(function(gnodes){
-      if(gnodes){ succeed(gnodes); return; }
+      if(gnodes && gnodes.length){ succeed(gnodes, "Geoapify"); return; }
       var stale = poiCacheGet(at, true);
-      if(stale){ R.lastPoiCell = poiCellKey(at); applyPoiNodes(stale); }
+      if(stale){ R.lastPoiCell = poiCellKey(at); applyPoiNodes(stale, {source:"saved area"}); }
       else {
         /* Last resort (Ryan's fallback ruling): every real-POI source
            failed and the area has no cache at all — scatter system trail
@@ -2729,7 +2746,7 @@ function renderSettings(){
     + '<div class="kv"><span>Profile ID</span><b style="font-size:12.5px;word-break:break-all;text-align:right;max-width:60%">'+esc(S.profileId)+'</b></div>'
     + '<div class="kv"><span>Recovery code</span><b>'+esc(S.recoveryCode)+'</b></div>'
     + '<p class="small muted">Keep your recovery code somewhere safe — it\'s how you get this profile back on another device.</p>'
-    + '<p class="small muted" style="margin:8px 0 0">Build: Geoapify live · Nov 22, 2026 · v19</p></div>'
+    + '<p class="small muted" style="margin:8px 0 0">Build: Places GET fix · Nov 22, 2026 · v20</p></div>'
     + '<div class="card"><h3 style="margin:0 0 8px">☁️ Sync & session</h3>'
     + '<p class="small" id="syncDetail" style="margin:0 0 6px"></p>'
     + '<p class="small" style="margin:0 0 10px">Session: <b id="sessText"></b></p>'
