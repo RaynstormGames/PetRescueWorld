@@ -186,6 +186,7 @@ nav.tabs .ic{font-size:21px; line-height:1.15}
 @media (max-width:420px){ .grid3{grid-template-columns:1fr 1fr} }
 /* ---------- PFP card ---------- */
 .pfp{position:relative; border-radius:20px; overflow:hidden; margin:0 auto; box-shadow:var(--shadow); border:3px solid rgba(0,0,0,.18)}
+.pfp img,.scene img{-webkit-user-drag:none; -webkit-user-select:none; user-select:none}
 .pfp .pfppet{position:absolute; left:50%; bottom:13%; transform:translateX(-50%)}
 .pfp .pfpbowl{position:absolute; bottom:11%; width:15%; height:9.5%; border-radius:6px 6px 50% 50%/6px 6px 90% 90%;
   background:color-mix(in srgb, var(--card) 25%, #8a97a5); overflow:hidden; border:2px solid rgba(0,0,0,.25); z-index:3}
@@ -307,7 +308,7 @@ window.PRW_SECRETS = {
   /* Places reliability net: paste a Geoapify API key (locked to this
      site) to enable the Geoapify fallback when every Overpass mirror
      fails. Leave empty ("") to run Overpass-rotation only. */
-  GEOAPIFY_KEY: ""
+  GEOAPIFY_KEY: "5a99dfc1a4a44857b7a27278a55ce1ce"
 };
 </script><script>
 /* ================= DATA (carried over from the game data tables) ================= */
@@ -1115,15 +1116,44 @@ function movePetTo(el, xPct, topPct, fast){
 function wait(ms){ return new Promise(function(res){ setTimeout(res, reducedMotion ? Math.min(ms, 60) : ms); }); }
 
 /* carousel wiring shared by Main + Yard */
+/* Pointer Events, not touchend: with touch-action:pan-y on the scene, a
+   real-world swipe (always some vertical drift) gets claimed by the
+   browser as a scroll and ends in touchcancel — a touchend-only handler
+   never fires. Horizontal movement is NOT a browser-handled gesture
+   under pan-y, so pointermove keeps flowing; fire as soon as horizontal
+   intent is clear instead of waiting for release, and again on release
+   if the drag was slow and short. Touch fallback kept for browsers
+   without Pointer Events. */
 function wireCarousel(stageEl, onSwipe){
   if(!stageEl) return;
-  var sx = null;
-  stageEl.addEventListener("touchstart", function(e){ sx = e.touches[0].clientX; }, {passive:true});
-  stageEl.addEventListener("touchend", function(e){
-    if(sx === null) return;
-    var dx = e.changedTouches[0].clientX - sx; sx = null;
-    if(Math.abs(dx) > 42) onSwipe(dx < 0 ? 1 : -1);
-  }, {passive:true});
+  if(window.PointerEvent){
+    var sx = null, sy = null, pid = null, fired = false;
+    function reset(){ sx = null; sy = null; pid = null; fired = false; }
+    stageEl.addEventListener("pointerdown", function(e){
+      if(pid !== null) return;
+      pid = e.pointerId; sx = e.clientX; sy = e.clientY; fired = false;
+    });
+    stageEl.addEventListener("pointermove", function(e){
+      if(pid === null || e.pointerId !== pid || sx === null || fired) return;
+      var dx = e.clientX - sx, dy = e.clientY - sy;
+      if(Math.abs(dx) > 48 && Math.abs(dx) > 1.5 * Math.abs(dy)){ fired = true; onSwipe(dx < 0 ? 1 : -1); }
+    });
+    stageEl.addEventListener("pointerup", function(e){
+      if(pid === null || e.pointerId !== pid || sx === null){ reset(); return; }
+      var dx = e.clientX - sx, dy = e.clientY - sy, was = fired;
+      reset();
+      if(!was && Math.abs(dx) > 42 && Math.abs(dx) > 1.3 * Math.abs(dy)) onSwipe(dx < 0 ? 1 : -1);
+    });
+    stageEl.addEventListener("pointercancel", reset);
+  } else {
+    var tsx = null;
+    stageEl.addEventListener("touchstart", function(e){ tsx = e.touches[0].clientX; }, {passive:true});
+    stageEl.addEventListener("touchend", function(e){
+      if(tsx === null) return;
+      var dx = e.changedTouches[0].clientX - tsx; tsx = null;
+      if(Math.abs(dx) > 42) onSwipe(dx < 0 ? 1 : -1);
+    }, {passive:true});
+  }
 }
 function carouselHTML(idx, count, slotOf){
   var dots = "";
@@ -1143,7 +1173,23 @@ function carouselHTML(idx, count, slotOf){
    favorite color when you match it, routine steps when you perform
    them in order, treat preference once you've fed the pet. */
 var currentUid = null;
+var lastSlot1Uid = null;   // Slot 1 occupant as of the last selection sync
+/* Keep the shared current pet in step with the team slots. Slot 1 is the
+   Main pet: if Slot 1 changes hands while the old Slot 1 pet was the
+   current selection, the selection follows to the new Slot 1 pet (a
+   Kennel swap into Slot 1 must change what Main shows). If the selected
+   pet has left the team entirely, currentPet() below falls back to the
+   Slot 1 pet. Runs inside currentPet() so every consumer — Main, Yard,
+   the map marker — sees the same, current selection. */
+function syncCurrentToSlots(){
+  var a = activePets();
+  if(!a.length){ lastSlot1Uid = null; return; }
+  var slot1 = a[0].uid;
+  if(lastSlot1Uid !== null && slot1 !== lastSlot1Uid && currentUid === lastSlot1Uid) currentUid = slot1;
+  lastSlot1Uid = slot1;
+}
 function currentPet(){
+  syncCurrentToSlots();
   var a = activePets();
   if(!a.length) return null;
   for(var i=0;i<a.length;i++) if(a[i].uid === currentUid) return a[i];
@@ -1927,6 +1973,18 @@ function addBaseLayer(){
 function drawGpsMap(){
   if(!window.L || !R.pos) return;
   var el = $("gpsmap"); if(!el) return;
+  /* render() rebuilds #view's innerHTML (Start walk / End walk does this),
+     which replaces the #gpsmap div. The old Leaflet map stays bound to the
+     detached div and the fresh div renders black — so if the live map's
+     container is no longer the div on screen, tear it down and rebuild. */
+  if(R.map){
+    var staleContainer = false;
+    try{ staleContainer = (R.map.getContainer() !== el); }catch(e){ staleContainer = true; }
+    if(staleContainer){
+      try{ R.map.remove(); }catch(e){}
+      R.map = null; R.layer = null; R.meMarker = null; R.baseLayer = null; R.baseKind = "";
+    }
+  }
   if(!R.map){
     R.map = L.map("gpsmap").setView([R.pos.lat, R.pos.lon], 16);
     addBaseLayer();
@@ -1964,8 +2022,10 @@ function gpsNodeTap(n){
    (network error, non-200, 429, 504, timeout, unparseable body). Query
    discipline: fetch only after moving >350 m from the last successful query
    point (or on an explicit Find me refresh), one request in flight at a
-   time, ~28 s abort per attempt, and a 24 h per-cell cache in localStorage
-   (key prw_poi_cache_v1 — separate from the profile keys). */
+   time, ~15 s abort per attempt, and a 24 h per-cell cache in localStorage
+   (key prw_poi_cache_v1 — separate from the profile keys). If every source
+   fails and no cache exists, the SCATTERED-NODE FALLBACK below the cache
+   helpers generates deterministic system trail nodes for the cell. */
 var OVERPASS_ENDPOINTS = [
   "https://overpass.private.coffee/api/interpreter",
   "https://overpass-api.de/api/interpreter",
@@ -1995,18 +2055,92 @@ function poiCacheSet(pos, nodes){
     localStorage.setItem(POI_CACHE_KEY, JSON.stringify(all));
   }catch(e){}
 }
+/* ================= SCATTERED-NODE FALLBACK =================
+   Terminal layer of the places chain (Ryan's fallback ruling): when
+   every real-POI source has failed AND the area has no usable cache,
+   scatter system trivia nodes so the real map is never empty. The set
+   is deterministic per ~500 m cell + UTC day (seeded PRNG, placed
+   around the CELL CENTER so any query point in the cell yields the
+   identical set): 14–20 nodes inside ~800 m, jittered ring placement,
+   >= 40 m apart. Scatter nodes are ordinary system nodes — kind "biz",
+   stable ids ("scatter-<cell>-<i>") — so tier (hashed from the id),
+   rewards, per-slot daily attempts and reset times behave exactly as
+   for real businesses; only the names are generic trail names, never
+   invented businesses. No trees and no vet points come from scatter.
+   Cached under its own key for 1 h (vs 24 h for real POIs) so a brief
+   outage doesn't lock an area into scatter for a day; a successful
+   real fetch overwrites via the normal cache path and takes over. */
+var SCATTER_CACHE_KEY = "prw_scatter_cache_v1";
+var SCATTER_CACHE_TTL = 3600 * 1000;
+var SCATTER_NAMES = ["Trail Node", "Roadside Node", "Meadow Node", "Creekside Node", "Hilltop Node", "Garden Node", "Lakeside Node", "Woodland Node", "Field Node", "Orchard Node", "Bridge Node", "Stone Node"];
+function scatterCacheReadAll(){
+  try{ var raw = localStorage.getItem(SCATTER_CACHE_KEY); var o = raw ? JSON.parse(raw) : null; return (o && typeof o === "object") ? o : {}; }catch(e){ return {}; }
+}
+function scatterCacheGet(pos){
+  var ent = scatterCacheReadAll()[poiCellKey(pos)];
+  if(!ent || !ent.nodes) return null;
+  if((Date.now() - (ent.ts || 0)) > SCATTER_CACHE_TTL) return null;
+  return ent.nodes;
+}
+function scatterCacheSet(pos, nodes){
+  try{
+    var all = scatterCacheReadAll();
+    var now = Date.now();
+    Object.keys(all).forEach(function(k){ if(now - (all[k].ts || 0) > SCATTER_CACHE_TTL) delete all[k]; });
+    all[poiCellKey(pos)] = { ts: now, nodes: nodes };
+    localStorage.setItem(SCATTER_CACHE_KEY, JSON.stringify(all));
+  }catch(e){}
+}
+function scatterRand(seedStr){
+  var h = 2166136261;
+  for(var i = 0; i < seedStr.length; i++){ h ^= seedStr.charCodeAt(i); h = Math.imul(h, 16777619); }
+  var a = h >>> 0;
+  return function(){
+    a = (a + 0x6D2B79F5) | 0;
+    var t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function genScatterNodes(at){
+  var cell = poiCellKey(at);
+  var center = { lat: (Math.floor(at.lat / 0.005) + 0.5) * 0.005, lon: (Math.floor(at.lon / 0.005) + 0.5) * 0.005 };
+  var day = new Date().toISOString().slice(0, 10);
+  var rnd = scatterRand(cell + "|" + day);
+  var count = 14 + Math.floor(rnd() * 7); /* 14–20 */
+  var nameOff = Math.floor(rnd() * SCATTER_NAMES.length);
+  var rings = [170, 300, 440, 590, 730];
+  var pts = [], guard = 0;
+  while(pts.length < count && guard < count * 60){
+    guard++;
+    var rad = rings[Math.floor(rnd() * rings.length)] + (rnd() * 70 - 35);
+    var ang = rnd() * Math.PI * 2;
+    var p = {
+      lat: center.lat + (Math.sin(ang) * rad) / 111320,
+      lon: center.lon + (Math.cos(ang) * rad) / (111320 * Math.cos(center.lat * Math.PI / 180))
+    };
+    var ok = true;
+    for(var j = 0; j < pts.length; j++){ if(haversine(pts[j], p) < 40){ ok = false; break; } }
+    if(ok) pts.push(p);
+  }
+  return pts.map(function(p, i){
+    return { id: "scatter-" + cell + "-" + i, name: SCATTER_NAMES[(nameOff + i) % SCATTER_NAMES.length], kind: "biz", lat: p.lat, lon: p.lon };
+  });
+}
 function geoapifyKey(){
   try{
     var k = (typeof window !== "undefined" && window.PRW_SECRETS && typeof window.PRW_SECRETS.GEOAPIFY_KEY === "string") ? window.PRW_SECRETS.GEOAPIFY_KEY.trim() : "";
     return k;
   }catch(e){ return ""; }
 }
-function applyPoiNodes(nodes){
+function applyPoiNodes(nodes, opts){
   R.nodes = nodes;
   R.loaded = true;
   drawGpsMap();
   var msg = $("gpsMsg");
-  if(msg) msg.textContent = "Found " + R.nodes.length + " places near you. Tap a ❓ for trivia, 🌳 to claim a tree, 🏥 for vet care.";
+  if(msg) msg.textContent = (opts && opts.scatter)
+    ? "Showing trail nodes for this area. Tap a ❓ for trivia."
+    : "Found " + R.nodes.length + " places near you. Tap a ❓ for trivia, 🌳 to claim a tree, 🏥 for vet care.";
 }
 function poiFetchWithTimeout(url, options, ms){
   var ctrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
@@ -2028,7 +2162,7 @@ function overpassQuery(lat, lon){
   /* Street trees stay in the union (unnamed, as before) so GPS tree
      claiming keeps working exactly as it did on the single-endpoint build. */
   clauses += 'node["natural"="tree"](around:800,' + lat + ',' + lon + ');';
-  return '[out:json][timeout:25];(' + clauses + ');out center 50;';
+  return '[out:json][timeout:20];(' + clauses + ');out center 50;';
 }
 function mapOverpassElements(elements){
   var seen = {}, out = [];
@@ -2047,7 +2181,7 @@ function mapOverpassElements(elements){
 }
 function tryOverpassEndpoint(idx, q, done){
   if(idx >= OVERPASS_ENDPOINTS.length){ done(null); return; }
-  poiFetchWithTimeout(OVERPASS_ENDPOINTS[idx], {method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"}, body:"data=" + encodeURIComponent(q)}, 28000)
+  poiFetchWithTimeout(OVERPASS_ENDPOINTS[idx], {method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"}, body:"data=" + encodeURIComponent(q)}, 15000)
   .then(function(r){
     if(!r.ok) throw new Error("http " + r.status);
     return r.json();
@@ -2063,7 +2197,7 @@ function fetchGeoapifyPlaces(done){
   if(!key){ done(null); return; }
   var url = "https://api.geoapify.com/v2/places?categories=commercial,service,catering,leisure,tourism,healthcare"
     + "&filter=circle:" + R.pos.lon + "," + R.pos.lat + ",800&limit=50&apiKey=" + encodeURIComponent(key);
-  poiFetchWithTimeout(url, {method:"GET"}, 28000)
+  poiFetchWithTimeout(url, {method:"GET"}, 15000)
   .then(function(r){ if(!r.ok) throw new Error("http " + r.status); return r.json(); })
   .then(function(j){
     var feats = (j && Array.isArray(j.features)) ? j.features : null;
@@ -2118,8 +2252,15 @@ function fetchOverpass(opts){
       var stale = poiCacheGet(at, true);
       if(stale){ R.lastPoiCell = poiCellKey(at); applyPoiNodes(stale); }
       else {
-        var msg = $("gpsMsg");
-        if(msg) msg.textContent = "Couldn't load nearby places (the map service didn't answer). The Practice Map still works fully.";
+        /* Last resort (Ryan's fallback ruling): every real-POI source
+           failed and the area has no cache at all — scatter system trail
+           nodes so the real map is never empty. Cached separately for
+           1 h so a temporary outage doesn't lock the area into scatter;
+           a later successful real fetch takes over on the next fetch. */
+        var sc = scatterCacheGet(at);
+        if(!sc){ sc = genScatterNodes(at); scatterCacheSet(at, sc); }
+        R.lastPoiCell = poiCellKey(at);
+        applyPoiNodes(sc, {scatter:true});
       }
       finish();
     });
@@ -2588,7 +2729,7 @@ function renderSettings(){
     + '<div class="kv"><span>Profile ID</span><b style="font-size:12.5px;word-break:break-all;text-align:right;max-width:60%">'+esc(S.profileId)+'</b></div>'
     + '<div class="kv"><span>Recovery code</span><b>'+esc(S.recoveryCode)+'</b></div>'
     + '<p class="small muted">Keep your recovery code somewhere safe — it\'s how you get this profile back on another device.</p>'
-    + '<p class="small muted" style="margin:8px 0 0">Build: Maps update · Nov 22, 2026 · v15</p></div>'
+    + '<p class="small muted" style="margin:8px 0 0">Build: Geoapify live · Nov 22, 2026 · v19</p></div>'
     + '<div class="card"><h3 style="margin:0 0 8px">☁️ Sync & session</h3>'
     + '<p class="small" id="syncDetail" style="margin:0 0 6px"></p>'
     + '<p class="small" style="margin:0 0 10px">Session: <b id="sessText"></b></p>'
