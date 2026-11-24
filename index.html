@@ -53,7 +53,7 @@ button.warnb{background:var(--terra); border-color:#a34a2e; color:#fff}
 button.ghost{background:transparent}
 button:disabled{opacity:.42; cursor:default}
 button.primary:active,button.pink:active{transform:scale(.97)}
-input[type=text],input[type=number],select,textarea{
+input[type=text],input[type=number],input[type=password],input[type=email],input[type=tel],select,textarea{
   font-family:inherit; font-size:16px; color:var(--ink); background:var(--card);
   border:2px solid var(--line); border-radius:var(--r-sm); padding:10px 12px; width:100%;
 }
@@ -260,6 +260,31 @@ nav.tabs .ic{font-size:21px; line-height:1.15}
   background:linear-gradient(180deg,#cdeffb 0%,#eaf7e0 55%,#a5d68a 56%,#7cbc58 100%)}
 .startercard img{max-height:164px; max-width:94%}
 details.more{margin-top:8px} details.more summary{cursor:pointer; font-weight:800; color:var(--green-d); font-size:14px; padding:6px 0}
+
+/* ---------- account gate (only shown when a sync endpoint is configured) ---------- */
+.authgate{position:fixed; inset:0; z-index:920; overflow-y:auto; background:#22331a}
+.authgate .authbg{position:fixed; inset:0; background-size:cover; background-position:center 22%}
+.authgate .authshade{position:fixed; inset:0; background:linear-gradient(180deg,rgba(20,30,12,0) 30%,rgba(20,30,12,.28) 62%,rgba(20,30,12,.55) 100%)}
+.authwrap{position:relative; z-index:2; max-width:520px; margin:0 auto; padding:26px 16px 30px; min-height:100%; display:flex; flex-direction:column}
+.authtitle{text-align:center; color:#fff; margin:2vh 0 14px}
+.authtitle h1{margin:0; font-size:42px; letter-spacing:.5px; text-shadow:0 2px 14px rgba(20,40,10,.55),0 1px 3px rgba(20,40,10,.6)}
+.authtitle p{margin:4px 0 0; font-weight:800; font-size:16px; text-shadow:0 1px 8px rgba(20,40,10,.65)}
+.authspacer{flex:1; min-height:12px}
+.authcard{margin-bottom:10px}
+.authcard label.b{display:block; margin:10px 0 4px}
+.authcard label.b:first-child{margin-top:0}
+.authmsg{border-radius:var(--r-sm); padding:9px 12px; font-size:14px; font-weight:700; margin:10px 0 0; display:none}
+.authmsg.err{display:block; background:#fdeceb; color:#7c1d12; border:2px solid #e8a49c}
+.authmsg.ok{display:block; background:#e9f6e3; color:#274d1d; border:2px solid #9cc98a}
+@media (prefers-color-scheme: dark){ .authmsg.err{background:#4a201b; color:#ffd9d2; border-color:#8a463c} .authmsg.ok{background:#263d1e; color:#d8f2c8; border-color:#4d7038} }
+.reccode{font-family:ui-monospace,Menlo,Consolas,monospace; font-size:19px; font-weight:800; letter-spacing:1px; text-align:center;
+  background:var(--card2); border:2px dashed var(--amber); border-radius:var(--r-md); padding:14px 10px; margin:10px 0; word-break:break-all}
+.totpsecret{font-family:ui-monospace,Menlo,Consolas,monospace; font-size:15px; font-weight:700; letter-spacing:1px; text-align:center;
+  background:var(--card2); border:2px solid var(--line); border-radius:var(--r-sm); padding:10px 8px; margin:8px 0; word-break:break-all}
+.savecheck{display:flex; gap:10px; align-items:flex-start; background:var(--card2); border:2px solid var(--line); border-radius:var(--r-md); padding:11px 12px; margin:12px 0; cursor:pointer}
+.savecheck input{width:22px; height:22px; flex:none; margin-top:1px; accent-color:var(--green)}
+.authlocal{display:block; margin:2px auto 0; background:rgba(24,34,16,.55); color:#fff; border:2px solid rgba(255,255,255,.65);
+  border-radius:999px; padding:10px 18px; font-weight:800; font-size:14.5px; min-height:46px; backdrop-filter:blur(2px)}
 @media (prefers-reduced-motion: reduce){
   .petwrap,.toyball{transition:none !important}
   .petwrap img,.bowl,.toyball,#growImg,.growglow,.float,.sparkle,.pfp .partywash,.pfp .pfpplate.partyplate{animation:none !important}
@@ -282,6 +307,7 @@ details.more{margin-top:8px} details.more summary{cursor:pointer; font-weight:80
 </nav>
 <div id="modalRoot"></div>
 <div id="sessionRoot"></div>
+<div id="authRoot"></div>
 <div id="toastRoot"></div>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
@@ -443,9 +469,9 @@ var POACHERIMG = {"collector": "data:image/webp;base64,UklGRvCeAABXRUJQVlA4WAoAA
    status — play is never blocked. */
 var DB_MANAGER_URL = (typeof window !== "undefined" && window.PRW_SECRETS && typeof window.PRW_SECRETS.DB_MANAGER_URL === "string") ? window.PRW_SECRETS.DB_MANAGER_URL.trim() : ""; // endpoint comes ONLY from the secrets file above (window.PRW_SECRETS) — never from Settings or localStorage
 var CFG_KEY = "prw_webapp_cfg";
-var cfg = { dbUrl: DB_MANAGER_URL, deviceId: "", sessionToken: "", sessionProfileId: "" };
-try{ var cRaw = localStorage.getItem(CFG_KEY); if(cRaw){ var cObj = JSON.parse(cRaw); if(cObj){ /* any dbUrl saved by an old build is IGNORED — the secrets file wins; cfg.dbUrl always stays DB_MANAGER_URL from PRW_SECRETS */ if(cObj.deviceId) cfg.deviceId = cObj.deviceId; if(cObj.sessionToken) cfg.sessionToken = cObj.sessionToken; if(cObj.sessionProfileId) cfg.sessionProfileId = cObj.sessionProfileId; } } }catch(e){}
-function saveCfg(){ try{ localStorage.setItem(CFG_KEY, JSON.stringify({ deviceId: cfg.deviceId, sessionToken: cfg.sessionToken, sessionProfileId: cfg.sessionProfileId })); }catch(e){} } // never persist an endpoint — DB config lives only in the secrets file
+var cfg = { dbUrl: DB_MANAGER_URL, deviceId: "", sessionToken: "", sessionProfileId: "", accountId: "", authMethod: "", authLabel: "", totpEnabled: false };
+try{ var cRaw = localStorage.getItem(CFG_KEY); if(cRaw){ var cObj = JSON.parse(cRaw); if(cObj){ /* any dbUrl saved by an old build is IGNORED — the secrets file wins; cfg.dbUrl always stays DB_MANAGER_URL from PRW_SECRETS */ if(cObj.deviceId) cfg.deviceId = cObj.deviceId; if(cObj.sessionToken) cfg.sessionToken = cObj.sessionToken; if(cObj.sessionProfileId) cfg.sessionProfileId = cObj.sessionProfileId; if(cObj.accountId) cfg.accountId = cObj.accountId; if(cObj.authMethod) cfg.authMethod = cObj.authMethod; if(cObj.authLabel) cfg.authLabel = cObj.authLabel; if(cObj.totpEnabled) cfg.totpEnabled = true; } } }catch(e){}
+function saveCfg(){ try{ localStorage.setItem(CFG_KEY, JSON.stringify({ deviceId: cfg.deviceId, sessionToken: cfg.sessionToken, sessionProfileId: cfg.sessionProfileId, accountId: cfg.accountId, authMethod: cfg.authMethod, authLabel: cfg.authLabel, totpEnabled: cfg.totpEnabled })); }catch(e){} } // never persist an endpoint — DB config lives only in the secrets file
 function genDeviceId(){ return "dev-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2,10); }
 if(!cfg.deviceId){ cfg.deviceId = genDeviceId(); saveCfg(); } // one persistent device ID per device/browser — how the manager tells devices apart
 function genProfileId(){ return "prw-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2,8); }
@@ -676,6 +702,506 @@ function startHeartbeat(){
   sessionState.hbTimer = setInterval(sessionHeartbeat, 120000); // ~every 2 minutes while the page is open
 }
 function stopHeartbeat(){ if(sessionState.hbTimer){ clearInterval(sessionState.hbTimer); sessionState.hbTimer=null; } }
+
+/* ================= ACCOUNT AUTH (v25) =================
+   Credential accounts on top of the profiles session machinery
+   (prw-server v0.3.0 contract):
+     POST /auth/register/email {email, password, deviceId?, keeperName?} -> 201 + session + recoveryCode (once)
+     POST /auth/register/phone {phone, pin, deviceId?, keeperName?}     -> 201 + session + recoveryCode (once)
+     POST /auth/login/email    {email, password, deviceId?, totpCode?}  -> session | 401 totp_required / wrong_totp
+     POST /auth/login/phone    {phone, pin, deviceId?, totpCode?}       -> same 2FA flow
+     POST /auth/totp/enroll    {accountId, sessionToken}                -> {secret, otpauthUrl} (pending)
+     POST /auth/totp/verify    {accountId, sessionToken, code}          -> activates 2FA
+     GET  /auth/twitch/start?deviceId=<id>&json=1                       -> {url} | 503 twitch_not_configured
+   GATING: this whole layer only activates when cfg.dbUrl is non-empty
+   (the endpoint comes only from the secrets file). With no endpoint the
+   game boots exactly as before — no gate, local profile, no calls.
+   Login/register responses carry the SAME session fields as the
+   profiles session API; they are stored in cfg (prw_webapp_cfg) the
+   same way, so sign-in persists across reloads and devices ride the
+   existing one-login / cooldown / heartbeat rules unchanged. */
+var authState = { step: "form", mode: "signin", method: "email", totpPending: false, busy: false,
+  dismissed: false, msg: "", msgOk: false, creds: null, pendingRecovery: null, pendingPayload: null,
+  pendingMethod: "", pendingLabel: "", pendingKeeper: "", recId: "", recSession: "", recKind: "password", recTotp: false };
+function authErrText(status, j){
+  var e = (j && j.error) || "";
+  if(e === "duplicate_email" || e === "duplicate_phone") return "That one's taken — it already has an account. Try signing in instead.";
+  if(e === "wrong_password") return "That password doesn't match — try again.";
+  if(e === "wrong_pin") return "That PIN doesn't match — try again.";
+  if(e === "account_not_found") return "No account found for that — double-check it, or create an account below.";
+  if(e === "weak_password") return "Passwords need at least 8 characters — pick a slightly longer one.";
+  if(e === "invalid_email") return "That email doesn't look quite right — check for typos.";
+  if(e === "invalid_phone") return "That phone number doesn't look quite right — digits only, with country code if you have one.";
+  if(e === "invalid_pin") return "Your PIN needs to be 4–6 digits.";
+  if(e === "missing_fields") return "Fill in every field, then try again.";
+  if(e === "active_elsewhere") return "This account is signed in on another device right now. Sign out there first, then try here.";
+  if(e === "twitch_not_configured") return "Twitch sign-in isn't switched on yet — email and phone sign-in work great in the meantime.";
+  if(e === "session_conflict") return "That session has moved to another device — sign in again here to claim it back.";
+  return "Couldn't reach the sign-in service just now — check your connection and try again.";
+}
+function authPost(path, body){
+  return fetchTimeout(sessionUrl(path), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+    .then(function(r){ return r.json().catch(function(){ return null; }).then(function(j){ return { status: r.status, body: j || {} }; }); });
+}
+/* Adopt a login/register payload: store the session exactly like the
+   profiles session login does, and merge the account identity into the
+   local profile through the existing load path (no fork): a started
+   local profile keeps its progress and takes the account's
+   profileId/recoveryCode, then pushes up; a fresh device pulls the
+   account's full profile down when the server has one. */
+function authAdoptSession(payload, method, label, keeperName){
+  if(payload.accountId) cfg.accountId = payload.accountId;
+  cfg.authMethod = method || cfg.authMethod; cfg.authLabel = label || cfg.authLabel;
+  if(payload.sessionToken) cfg.sessionToken = payload.sessionToken;
+  if(payload.profileId) cfg.sessionProfileId = payload.profileId;
+  saveCfg();
+  sessionState.mode = "held"; hideSessionGate();
+  if(sessionState.cdTimer){ clearInterval(sessionState.cdTimer); sessionState.cdTimer = null; }
+  var pid = payload.profileId;
+  if(pid && S && pid !== S.profileId){
+    if(S.started){
+      S.profileId = pid;
+      if(payload.recoveryCode) S.recoveryCode = payload.recoveryCode;
+      if(keeperName) S.keeperName = keeperName;
+      save(); startHeartbeat();
+      return Promise.resolve(true);
+    }
+    return fetchTimeout(cfg.dbUrl + (cfg.dbUrl.indexOf("?") >= 0 ? "&" : "?") + "profileId=" + encodeURIComponent(pid), { method: "GET" })
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(j){
+        if(j && j.profile && j.profile.profileId){ applyRemoteProfile(j); }
+        else {
+          S.profileId = pid;
+          if(payload.recoveryCode) S.recoveryCode = payload.recoveryCode;
+          if(keeperName && !S.keeperName) S.keeperName = keeperName;
+        }
+        save(); startHeartbeat();
+        return true;
+      })
+      .catch(function(){
+        S.profileId = pid;
+        if(payload.recoveryCode) S.recoveryCode = payload.recoveryCode;
+        save(); startHeartbeat();
+        return true;
+      });
+  }
+  if(payload.recoveryCode && S) S.recoveryCode = payload.recoveryCode;
+  if(keeperName && S && !S.keeperName) S.keeperName = keeperName;
+  if(S) save();
+  startHeartbeat();
+  return Promise.resolve(true);
+}
+function finishAuth(payload, method, label, keeperName, isNew){
+  return authAdoptSession(payload, method, label, keeperName).then(function(){
+    hideAuthGate();
+    setSync("synced"); syncState.lastSync = Date.now();
+    toast(isNew ? "🎉 Account created — welcome to PetRescueWorld, " + (S.keeperName || "Keeper") + "!" : "🔐 Signed in — welcome back, " + (S.keeperName || "Keeper") + "!");
+    render();
+    return true;
+  });
+}
+function authLoginBg(){
+  var h = new Date().getHours();
+  return (h >= 18 || h < 6) ? "assets/login-sanctuary-dusk.webp" : "assets/login-sanctuary-dawn.webp";
+}
+function maybeShowAuthGate(){
+  if(!cfg.dbUrl) return;
+  if(sessionHeld()) return;
+  if(authState.dismissed) return;
+  showAuthGate();
+}
+function hideAuthGate(){ var r = document.getElementById("authRoot"); if(r) r.innerHTML = ""; }
+function showAuthGate(){
+  if(!cfg.dbUrl) return;
+  authState.step = "form"; authState.totpPending = false; authState.msg = ""; authState.creds = null;
+  var root = document.getElementById("authRoot"); if(!root) return;
+  root.innerHTML = '<div class="authgate"><div class="authbg" style="background-image:url(' + authLoginBg() + ')"></div><div class="authshade"></div>'
+    + '<div class="authwrap"><div class="authtitle"><h1>PetRescueWorld</h1>'
+    + '<p>Rescue. Care. Protect — and your sanctuary travels with you.</p></div>'
+    + '<div class="authspacer"></div>'
+    + '<div class="card authcard" id="authCard"></div>'
+    + '<button class="authlocal" id="authLocalOnly">Continue on this device only</button>'
+    + '<p class="center small" style="color:#fff;text-shadow:0 1px 6px rgba(20,40,10,.7);margin:8px 0 0">No account needed to play — your pets stay on this device.</p>'
+    + '</div></div>';
+  var lo = document.getElementById("authLocalOnly");
+  if(lo) lo.addEventListener("click", function(){ authState.dismissed = true; hideAuthGate(); toast("💾 Playing on this device only — create an account any time from Settings when a sync endpoint is configured."); });
+  renderAuthBody();
+}
+function authMsgHTML(){
+  if(!authState.msg) return "";
+  return '<div class="authmsg ' + (authState.msgOk ? "ok" : "err") + '" style="display:block">' + esc(authState.msg) + '</div>';
+}
+function renderAuthBody(){
+  var card = document.getElementById("authCard"); if(!card) return;
+  if(authState.step === "recovery"){ renderAuthRecovery(card); return; }
+  if(authState.step === "totp-offer"){ renderAuthTotpOffer(card); return; }
+  if(authState.step === "totp-enroll"){ renderAuthTotpEnroll(card); return; }
+  if(authState.step === "recover-id" || authState.step === "recover-code" || authState.step === "recover-reset"){ renderAuthRecover(card); return; }
+  var m = authState.method, mode = authState.mode;
+  var html = '<div class="seg" role="tablist">'
+    + '<button data-am="email" class="' + (m === "email" ? "on" : "") + '">✉️ Email</button>'
+    + '<button data-am="phone" class="' + (m === "phone" ? "on" : "") + '">📱 Phone</button>'
+    + '<button data-am="twitch" class="' + (m === "twitch" ? "on" : "") + '">🎮 Twitch</button></div>';
+  if(m === "twitch"){
+    html += '<p class="small" style="margin:2px 0 10px">Sign in — or create your account — with your Twitch account. It doubles as your Community Park link.</p>'
+      + '<p style="margin:0"><button class="primary" id="auTwitch" style="width:100%;background:#6441a5;border-color:#432b6e">🎮 Continue with Twitch</button></p>'
+      + authMsgHTML();
+  } else {
+    html += '<div class="seg">'
+      + '<button data-amode="signin" class="' + (mode === "signin" ? "on" : "") + '">Sign in</button>'
+      + '<button data-amode="create" class="' + (mode === "create" ? "on" : "") + '">Create account</button></div>';
+    if(mode === "create"){
+      html += '<label class="b" for="auKeeper">Keeper name</label>'
+        + '<input type="text" id="auKeeper" maxlength="24" placeholder="e.g. Rayn" autocomplete="nickname">';
+    }
+    if(m === "email"){
+      html += '<label class="b" for="auEmail">Email</label>'
+        + '<input type="email" id="auEmail" placeholder="you@example.com" autocomplete="email">'
+        + '<label class="b" for="auPass">Password</label>'
+        + '<input type="password" id="auPass" placeholder="' + (mode === "create" ? "At least 8 characters" : "Your password") + '" autocomplete="' + (mode === "create" ? "new-password" : "current-password") + '">';
+    } else {
+      html += '<label class="b" for="auPhone">Phone number</label>'
+        + '<input type="tel" id="auPhone" placeholder="+1 555 123 4567" autocomplete="tel">'
+        + '<label class="b" for="auPin">PIN</label>'
+        + '<input type="password" id="auPin" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="' + (mode === "create" ? "Choose 4–6 digits" : "Your 4–6 digit PIN") + '" autocomplete="' + (mode === "create" ? "new-password" : "current-password") + '">';
+    }
+    if(authState.totpPending){
+      html += '<label class="b" for="auTotp">Authenticator code</label>'
+        + '<input type="text" id="auTotp" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code" autocomplete="one-time-code">'
+        + '<p class="small muted" style="margin:4px 0 0">This account has authenticator 2FA on — pop open your app and type the current code.</p>';
+    }
+    html += authMsgHTML()
+      + '<p style="margin:14px 0 0"><button class="primary" id="auSubmit" style="width:100%">' + (authState.busy ? "One moment…" : (mode === "create" ? "🐾 Create my account" : "🔐 Sign in")) + '</button></p>'
+      + '<p class="small muted center" style="margin:8px 0 0">' + (mode === "create" ? "One account works on every device — one sign-in at a time." : "New here? Switch to Create account above.") + '</p>'
+      + (mode === "signin" ? '<p class="center" style="margin:6px 0 0"><button class="ghost" id="auForgot" style="min-height:40px">Forgot your sign-in?</button></p>' : '');
+  }
+  card.innerHTML = html;
+  card.querySelectorAll("[data-am]").forEach(function(b){ b.addEventListener("click", function(){ authState.method = b.getAttribute("data-am"); authState.totpPending = false; authState.msg = ""; renderAuthBody(); }); });
+  card.querySelectorAll("[data-amode]").forEach(function(b){ b.addEventListener("click", function(){ authState.mode = b.getAttribute("data-amode"); authState.totpPending = false; authState.msg = ""; renderAuthBody(); }); });
+  var tw = document.getElementById("auTwitch"); if(tw) tw.addEventListener("click", authTwitchStart);
+  var fg = document.getElementById("auForgot"); if(fg) fg.addEventListener("click", function(){ authState.step = "recover-id"; authState.msg = ""; renderAuthBody(); });
+  var sb = document.getElementById("auSubmit"); if(sb) sb.addEventListener("click", authSubmit);
+  var tp = document.getElementById("auTotp"); if(tp) tp.focus();
+}
+function authSubmit(){
+  if(authState.busy) return;
+  var m = authState.method, mode = authState.mode;
+  var keeper = "";
+  if(mode === "create"){ var k = document.getElementById("auKeeper"); keeper = k ? k.value.trim() : ""; if(!keeper){ authState.msg = "Give yourself a keeper name first — that's how the sanctuary knows you."; renderAuthBody(); return; } }
+  var body = { deviceId: cfg.deviceId }, label = "";
+  if(authState.totpPending && authState.creds){ body = Object.assign({}, authState.creds); }
+  else if(m === "email"){
+    var em = document.getElementById("auEmail"), pw = document.getElementById("auPass");
+    body.email = em ? em.value.trim() : ""; body.password = pw ? pw.value : ""; label = body.email;
+    if(mode === "create") body.keeperName = keeper;
+  } else {
+    var ph = document.getElementById("auPhone"), pn = document.getElementById("auPin");
+    body.phone = ph ? ph.value.trim() : ""; body.pin = pn ? pn.value : ""; label = body.phone;
+    if(mode === "create") body.keeperName = keeper;
+  }
+  if(authState.totpPending){
+    var tc = document.getElementById("auTotp");
+    body.totpCode = tc ? tc.value.trim() : "";
+    if(!body.totpCode){ authState.msg = "Type the 6-digit code from your authenticator app."; renderAuthBody(); return; }
+  }
+  authState.creds = (mode === "signin") ? body : null;
+  authState.busy = true; renderAuthBody();
+  var path = (mode === "create") ? (m === "email" ? "/auth/register/email" : "/auth/register/phone") : (m === "email" ? "/auth/login/email" : "/auth/login/phone");
+  authPost(path, body).then(function(res){
+    authState.busy = false;
+    var j = res.body;
+    if((res.status === 200 || res.status === 201) && j.ok !== false && (j.sessionToken || j.profileId)){
+      if(mode === "create" && j.recoveryCode){
+        authState.pendingRecovery = j.recoveryCode;
+        authState.pendingPayload = j; authState.pendingMethod = m; authState.pendingLabel = label; authState.pendingKeeper = keeper;
+        authState.step = "recovery"; authState.msg = "";
+        renderAuthBody();
+        return;
+      }
+      finishAuth(j, m, label, keeper, mode === "create");
+      return;
+    }
+    if(res.status === 429 && j.error === "cooldown"){
+      var secs = (typeof j.retryAfterSeconds === "number" && j.retryAfterSeconds > 0) ? j.retryAfterSeconds : 300;
+      authState.msg = "This account just signed out on another device, so there's a short wait before a new device can sign in — about " + fmtClock(secs) + " to go. Your pets are safe; try again in a bit.";
+      renderAuthBody(); return;
+    }
+    if(res.status === 401 && j.error === "totp_required"){
+      authState.totpPending = true;
+      authState.msg = "Almost there — this account uses an authenticator app. Enter the current 6-digit code to finish signing in.";
+      authState.msgOk = true;
+      renderAuthBody(); return;
+    }
+    if(res.status === 401 && j.error === "wrong_totp"){
+      authState.totpPending = true;
+      authState.msg = "That code didn't match — codes change every 30 seconds, so try the fresh one in your app.";
+      authState.msgOk = false;
+      renderAuthBody(); return;
+    }
+    authState.msgOk = false;
+    authState.msg = authErrText(res.status, j);
+    renderAuthBody();
+  }).catch(function(){
+    authState.busy = false; authState.msgOk = false;
+    authState.msg = "Couldn't reach the sign-in service just now — check your connection and try again.";
+    renderAuthBody();
+  });
+}
+function authTwitchStart(){
+  if(authState.busy) return;
+  authState.busy = true; authState.msg = ""; renderAuthBody();
+  fetchTimeout(sessionUrl("/auth/twitch/start") + "?deviceId=" + encodeURIComponent(cfg.deviceId) + "&json=1", { method: "GET" })
+    .then(function(r){ return r.json().catch(function(){ return null; }).then(function(j){ return { status: r.status, body: j || {} }; }); })
+    .then(function(res){
+      authState.busy = false;
+      if(res.status === 503 || res.body.error === "twitch_not_configured"){
+        authState.msgOk = false;
+        authState.msg = "Twitch sign-in isn't switched on yet — email and phone sign-in work great in the meantime.";
+        renderAuthBody(); return;
+      }
+      if(res.body.url){
+        authState.msgOk = true;
+        authState.msg = "Opening Twitch in a new tab — approve there, then come back here. If the tab didn't open, your browser may have blocked it.";
+        renderAuthBody();
+        window.open(res.body.url, "_blank");
+        return;
+      }
+      authState.msgOk = false; authState.msg = authErrText(res.status, res.body); renderAuthBody();
+    })
+    .catch(function(){
+      authState.busy = false; authState.msgOk = false;
+      authState.msg = "Couldn't reach the sign-in service just now — check your connection and try again.";
+      renderAuthBody();
+    });
+}
+function renderAuthRecovery(card){
+  card.innerHTML = '<div class="center" style="font-size:40px">🎉</div>'
+    + '<h2 class="center" style="margin:4px 0 6px">Your account is created!</h2>'
+    + '<p style="margin:0">One last thing — here is <b>your recovery code</b>. It\'s a backup way back in if you ever lose access to your sign-in. Save it somewhere safe — a note, a password manager, anywhere you\'ll find it again.</p>'
+    + '<div class="reccode">' + esc(authState.pendingRecovery || "") + '</div>'
+    + '<label class="savecheck"><input type="checkbox" id="auRecSaved"><span><b>I\'ve saved my recovery code</b><br><span class="small muted">Your email / phone / Twitch sign-in keeps working as normal — this code is just your backup.</span></span></label>'
+    + '<p style="margin:0"><button class="primary" id="auRecGo" style="width:100%" disabled>🐾 Enter my sanctuary</button></p>';
+  var cb = document.getElementById("auRecSaved"), go = document.getElementById("auRecGo");
+  if(cb && go) cb.addEventListener("change", function(){ go.disabled = !cb.checked; });
+  if(go) go.addEventListener("click", function(){
+    var payload = authState.pendingPayload, m = authState.pendingMethod, label = authState.pendingLabel, keeper = authState.pendingKeeper;
+    authState.pendingPayload = null;
+    if(payload && !payload.sessionToken){
+      // Account exists but its first session couldn't start (e.g. a
+      // cooldown elsewhere) — identity is adopted, sign-in comes next.
+      if(payload.profileId){ cfg.accountId = payload.accountId || cfg.accountId; cfg.sessionProfileId = payload.profileId; if(S && payload.profileId !== S.profileId && !S.started){ S.profileId = payload.profileId; S.recoveryCode = payload.recoveryCode; } if(S && payload.recoveryCode) S.recoveryCode = payload.recoveryCode; saveCfg(); if(S) save(); }
+      authState.step = "form"; authState.mode = "signin"; authState.msgOk = false;
+      authState.msg = "Your account is saved! Its first sign-in needs a short wait (session rule) — sign in here in a moment.";
+      hideAuthGate(); showAuthGate(); authState.mode = "signin"; authState.msg = "Your account is saved! Sign in here to start your first session."; authState.msgOk = true; renderAuthBody();
+      return;
+    }
+    authAdoptSession(payload, m, label, keeper).then(function(){
+      authState.step = "totp-offer"; authState.msg = "";
+      renderAuthBody();
+    });
+  });
+}
+function renderAuthTotpOffer(card){
+  card.innerHTML = '<div class="center" style="font-size:40px">🛡️</div>'
+    + '<h2 class="center" style="margin:4px 0 6px">Turn on authenticator 2FA?</h2>'
+    + '<p>Optional, and recommended: link an authenticator app (Google Authenticator, Authy, 1Password — any of them) so signing in also asks for a 6-digit code from the app. It takes about a minute.</p>'
+    + '<p style="display:flex;gap:8px;flex-wrap:wrap;margin:0"><button class="primary" id="auTotpYes" style="flex:1">🛡️ Set up 2FA</button>'
+    + '<button class="ghost" id="auTotpSkip" style="flex:1">Skip for now</button></p>'
+    + '<p class="small muted center" style="margin:8px 0 0">You can always turn this on later in Settings.</p>';
+  var y = document.getElementById("auTotpYes"); if(y) y.addEventListener("click", function(){ authState.step = "totp-enroll"; renderAuthBody(); });
+  var s = document.getElementById("auTotpSkip"); if(s) s.addEventListener("click", function(){ hideAuthGate(); setSync("synced"); toast("🔐 Signed in — welcome to PetRescueWorld, " + (S.keeperName || "Keeper") + "!"); render(); });
+}
+function renderAuthTotpEnroll(card){
+  card.innerHTML = '<h2 style="margin:2px 0 6px">🛡️ Authenticator 2FA</h2><div id="auTotpZone"><p class="small muted">Getting your setup key…</p></div>'
+    + '<p style="margin:12px 0 0"><button class="ghost" id="auTotpLater" style="width:100%">Do this later — enter my sanctuary</button></p>';
+  var l = document.getElementById("auTotpLater"); if(l) l.addEventListener("click", function(){ hideAuthGate(); render(); });
+  startTotpEnroll("auTotpZone", function(){ setTimeout(function(){ hideAuthGate(); toast("🛡️ 2FA is on — welcome to PetRescueWorld!"); render(); }, 900); });
+}
+/* ---------- account recovery (RecoveryBot contract, prw-server v0.4.0) ----------
+   POST /auth/recover/request {identifier}            -> ALWAYS generic success
+   POST /auth/recover/verify  {identifier, code}      -> {recoverySession} | generic failure
+   POST /auth/recover/reset-password {recoverySession, newPassword}
+   POST /auth/recover/reset-pin      {recoverySession, newPin}
+   POST /auth/recover/reset-totp     {recoverySession}  (clears a lost authenticator)
+   A successful reset revokes the account's other sessions server-side. */
+function renderAuthRecover(card){
+  if(authState.step === "recover-id"){
+    card.innerHTML = '<h2 style="margin:2px 0 6px">Forgot your sign-in?</h2>'
+      + '<p class="small" style="margin:0 0 6px">No worries — it happens. Enter the <b>email or phone number</b> on your account and we\'ll send a 6-digit recovery code. It stays good for about 15 minutes.</p>'
+      + '<label class="b" for="auRecId">Email or phone</label>'
+      + '<input type="text" id="auRecId" placeholder="you@example.com or +1 555 123 4567" autocomplete="username">'
+      + authMsgHTML()
+      + '<p style="margin:14px 0 0"><button class="primary" id="auRecSend" style="width:100%">' + (authState.busy ? "Sending…" : "📨 Send my recovery code") + '</button></p>'
+      + '<p class="center" style="margin:10px 0 0"><button class="ghost" id="auRecBack">← Back to sign in</button></p>';
+    var b1 = document.getElementById("auRecBack"); if(b1) b1.addEventListener("click", function(){ authState.step = "form"; authState.msg = ""; renderAuthBody(); });
+    var s1 = document.getElementById("auRecSend"); if(s1) s1.addEventListener("click", authRecoverRequest);
+    return;
+  }
+  if(authState.step === "recover-code"){
+    card.innerHTML = '<h2 style="margin:2px 0 6px">Check your messages</h2>'
+      + '<div class="authmsg ok" style="display:block">If that email or phone matches an account, a recovery code is on its way.</div>'
+      + '<label class="b" for="auRecCode">Recovery code</label>'
+      + '<input type="text" id="auRecCode" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code" autocomplete="one-time-code">'
+      + '<p class="small muted" style="margin:4px 0 0">Codes last about 15 minutes. Nothing arrived? Give it a minute, check spam, or request a fresh code.</p>'
+      + authMsgHTML()
+      + '<p style="margin:14px 0 0"><button class="primary" id="auRecVerify" style="width:100%">' + (authState.busy ? "Checking…" : "✓ Verify code") + '</button></p>'
+      + '<p class="center" style="margin:10px 0 0;display:flex;gap:8px;justify-content:center;flex-wrap:wrap"><button class="ghost" id="auRecAgain">Request a new code</button><button class="ghost" id="auRecBack2">← Back to sign in</button></p>';
+    var v = document.getElementById("auRecVerify"); if(v) v.addEventListener("click", authRecoverVerify);
+    var a = document.getElementById("auRecAgain"); if(a) a.addEventListener("click", function(){ authState.step = "recover-id"; authState.msg = ""; renderAuthBody(); });
+    var b2 = document.getElementById("auRecBack2"); if(b2) b2.addEventListener("click", function(){ authState.step = "form"; authState.msg = ""; renderAuthBody(); });
+    var ci = document.getElementById("auRecCode"); if(ci) ci.focus();
+    return;
+  }
+  // recover-reset
+  var isPw = authState.recKind !== "pin";
+  card.innerHTML = '<h2 style="margin:2px 0 6px">You\'re almost back in</h2>'
+    + '<p class="small" style="margin:0 0 6px">Code accepted. Choose a new ' + (isPw ? "password" : "PIN") + ' for your account.</p>'
+    + (isPw
+      ? '<label class="b" for="auRecNew">New password</label><input type="password" id="auRecNew" placeholder="At least 8 characters" autocomplete="new-password">'
+      : '<label class="b" for="auRecNew">New PIN</label><input type="password" id="auRecNew" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="4–6 digits" autocomplete="new-password">')
+    + (authState.recTotp
+      ? '<label class="savecheck"><input type="checkbox" id="auRecTotp"><span><b>Also reset my authenticator app</b><br><span class="small muted">Lost your authenticator? This turns 2FA off so you can set it up fresh after signing in.</span></span></label>'
+      : '')
+    + '<p class="small muted" style="margin:8px 0 0">Heads-up: a successful reset signs your account out on every other device.</p>'
+    + authMsgHTML()
+    + '<p style="margin:14px 0 0"><button class="primary" id="auRecReset" style="width:100%">' + (authState.busy ? "Saving…" : "🔑 Save & back to sign in") + '</button></p>'
+    + '<p class="center" style="margin:10px 0 0"><button class="ghost" id="auRecBack3">← Back to sign in</button></p>';
+  var r = document.getElementById("auRecReset"); if(r) r.addEventListener("click", authRecoverReset);
+  var b3 = document.getElementById("auRecBack3"); if(b3) b3.addEventListener("click", function(){ authState.step = "form"; authState.msg = ""; authState.recSession = ""; renderAuthBody(); });
+}
+function authRecoverRequest(){
+  if(authState.busy) return;
+  var el = document.getElementById("auRecId");
+  var id = el ? el.value.trim() : "";
+  if(!id){ authState.msgOk = false; authState.msg = "Enter the email or phone number on your account first."; renderAuthBody(); return; }
+  authState.recId = id; authState.busy = true; renderAuthBody();
+  authPost("/auth/recover/request", { identifier: id }).then(function(){
+    // The server answers the same generic success whether or not the
+    // account exists — the UI never claims otherwise.
+    authState.busy = false; authState.msg = ""; authState.msgOk = true;
+    authState.step = "recover-code";
+    renderAuthBody();
+  }).catch(function(){
+    authState.busy = false; authState.msgOk = false;
+    authState.msg = "Couldn't reach the sign-in service just now — check your connection and try again.";
+    renderAuthBody();
+  });
+}
+function authRecoverVerify(){
+  if(authState.busy) return;
+  var el = document.getElementById("auRecCode");
+  var code = el ? el.value.trim() : "";
+  if(!code){ authState.msgOk = false; authState.msg = "Type the 6-digit code from your message first."; renderAuthBody(); return; }
+  authState.busy = true; renderAuthBody();
+  authPost("/auth/recover/verify", { identifier: authState.recId, code: code }).then(function(res){
+    authState.busy = false;
+    var j = res.body || {};
+    var sess = j.recoverySession || j.session || j.token || "";
+    if(res.status === 200 && sess){
+      authState.recSession = sess;
+      authState.recKind = (authState.recId.indexOf("@") >= 0) ? "password" : "pin";
+      if(j.method === "phone" || j.accountType === "phone") authState.recKind = "pin";
+      if(j.method === "email" || j.accountType === "email") authState.recKind = "password";
+      authState.recTotp = j.totpEnabled !== false;
+      authState.msg = ""; authState.step = "recover-reset";
+      renderAuthBody();
+      return;
+    }
+    authState.msgOk = false;
+    authState.msg = "That code didn't work — check it and try again, or request a new one.";
+    renderAuthBody();
+  }).catch(function(){
+    authState.busy = false; authState.msgOk = false;
+    authState.msg = "Couldn't reach the sign-in service just now — check your connection and try again.";
+    renderAuthBody();
+  });
+}
+function authRecoverReset(){
+  if(authState.busy) return;
+  var el = document.getElementById("auRecNew");
+  var val = el ? el.value : "";
+  var isPw = authState.recKind !== "pin";
+  if(isPw && (!val || val.length < 8)){ authState.msgOk = false; authState.msg = "Passwords need at least 8 characters — pick a slightly longer one."; renderAuthBody(); return; }
+  if(!isPw && !/^\d{4,6}$/.test(val || "")){ authState.msgOk = false; authState.msg = "Your PIN needs to be 4–6 digits."; renderAuthBody(); return; }
+  var totpBox = document.getElementById("auRecTotp");
+  var alsoTotp = !!(totpBox && totpBox.checked);
+  authState.busy = true; renderAuthBody();
+  var path = isPw ? "/auth/recover/reset-password" : "/auth/recover/reset-pin";
+  var body = { recoverySession: authState.recSession };
+  if(isPw) body.newPassword = val; else body.newPin = val;
+  authPost(path, body).then(function(res){
+    if(res.status !== 200 || (res.body && res.body.ok === false)){
+      authState.busy = false; authState.msgOk = false;
+      authState.msg = authErrText(res.status, res.body || {});
+      if((res.body || {}).error === "weak_password") authState.msg = "Passwords need at least 8 characters — pick a slightly longer one.";
+      if((res.body || {}).error === "invalid_pin") authState.msg = "Your PIN needs to be 4–6 digits.";
+      renderAuthBody();
+      return;
+    }
+    var done = function(totpNote){
+      authState.busy = false;
+      authState.recSession = ""; authState.totpPending = false; authState.creds = null;
+      authState.step = "form"; authState.mode = "signin";
+      authState.method = isPw ? "email" : "phone";
+      authState.msgOk = true;
+      authState.msg = "You're back — sign in with your new " + (isPw ? "password" : "PIN") + "." + totpNote;
+      renderAuthBody();
+    };
+    if(alsoTotp){
+      authPost("/auth/recover/reset-totp", { recoverySession: authState.recSession }).then(function(tres){
+        done(tres.status === 200 ? " Your authenticator was reset too — set it up again in Settings after signing in." : "");
+      }).catch(function(){ done(""); });
+    } else done("");
+  }).catch(function(){
+    authState.busy = false; authState.msgOk = false;
+    authState.msg = "Couldn't reach the sign-in service just now — check your connection and try again.";
+    renderAuthBody();
+  });
+}
+
+/* Shared TOTP enrollment: fills the named zone with the secret +
+   otpauth link, then a verify-code form. Used by the post-registration
+   step and by Settings. Needs cfg.accountId + a live session. */
+function startTotpEnroll(zoneId, onDone){
+  var zone = document.getElementById(zoneId); if(!zone) return;
+  if(!cfg.accountId || !cfg.sessionToken){
+    zone.innerHTML = '<p class="small">2FA setup needs an account sign-in on this device — sign in with email or phone first, then come back here.</p>';
+    return;
+  }
+  zone.innerHTML = '<p class="small muted">Getting your setup key…</p>';
+  authPost("/auth/totp/enroll", { accountId: cfg.accountId, sessionToken: cfg.sessionToken }).then(function(res){
+    var j = res.body;
+    if(res.status !== 200 || !j.secret){
+      zone.innerHTML = '<p class="small">' + esc(authErrText(res.status, j)) + '</p>';
+      return;
+    }
+    zone.innerHTML = '<p class="small" style="margin:0 0 4px">1. In your authenticator app, add an account and enter this key (or open the link on the device that has the app):</p>'
+      + '<div class="totpsecret">' + esc(j.secret) + '</div>'
+      + '<p class="small" style="margin:0 0 4px;word-break:break-all"><a href="' + esc(j.otpauthUrl || "") + '">' + esc(j.otpauthUrl || "") + '</a></p>'
+      + '<p class="small" style="margin:10px 0 4px">2. Type the 6-digit code the app shows for PetRescueWorld:</p>'
+      + '<p style="display:flex;gap:8px;margin:0"><input type="text" id="' + zoneId + 'Code" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="6-digit code" autocomplete="one-time-code" style="flex:1"><button class="primary" id="' + zoneId + 'Verify">Verify &amp; turn on</button></p>'
+      + '<div class="authmsg" id="' + zoneId + 'Msg"></div>';
+    var vb = document.getElementById(zoneId + "Verify");
+    if(vb) vb.addEventListener("click", function(){
+      var codeEl = document.getElementById(zoneId + "Code");
+      var msgEl = document.getElementById(zoneId + "Msg");
+      var code = codeEl ? codeEl.value.trim() : "";
+      if(!code){ if(msgEl){ msgEl.className = "authmsg err"; msgEl.textContent = "Type the 6-digit code from your app first."; } return; }
+      authPost("/auth/totp/verify", { accountId: cfg.accountId, sessionToken: cfg.sessionToken, code: code }).then(function(vres){
+        if(vres.status === 200 && vres.body.totpEnabled !== false && vres.body.ok !== false){
+          cfg.totpEnabled = true; saveCfg();
+          zone.innerHTML = '<p class="b" style="margin:0">🛡️ Authenticator 2FA is ON for your account. Signing in will now ask for a code from your app.</p>';
+          if(onDone) onDone();
+          if(curTab === "settings") setTimeout(function(){ render(); }, 1200);
+          return;
+        }
+        if(msgEl){ msgEl.className = "authmsg err"; msgEl.textContent = (vres.body.error === "wrong_totp") ? "That code didn't match — codes change every 30 seconds, so try the fresh one." : authErrText(vres.status, vres.body); }
+      }).catch(function(){ if(msgEl){ msgEl.className = "authmsg err"; msgEl.textContent = "Couldn't reach the sign-in service just now — try again."; } });
+    });
+  }).catch(function(){
+    zone.innerHTML = '<p class="small">Couldn\'t reach the sign-in service just now — check your connection and try again.</p>';
+  });
+}
 
 function applyRemoteProfile(remote){
   if(!remote || !remote.profile) return false;
@@ -2928,9 +3454,9 @@ function renderGuide(){
   html += '<div class="card" style="text-align:center;background:linear-gradient(160deg,var(--card) 0%,var(--card2) 100%)">'
     + '<div style="font-size:34px">🐾</div>'
     + '<h2 style="margin:2px 0;font-size:27px">PetRescueWorld</h2>'
-    + '<p class="b" style="margin:8px 0 2px;font-size:16px">Created by Rayn &amp; Mallow</p>'
-    + '<p style="margin:10px 0 2px"><b>Lead</b> — Rayn</p>'
-    + '<p style="margin:2px 0"><b>Design, Art, Writing, Code &amp; Everything Else</b> — Mallow</p>'
+    + '<p class="b" style="margin:8px 0 2px;font-size:16px">Created by Rayn Storm &amp; Mallow Lotyl</p>'
+    + '<p style="margin:10px 0 2px"><b>Lead</b> — Rayn Storm</p>'
+    + '<p style="margin:2px 0"><b>Design, Art, Writing, Code &amp; Everything Else</b> — Mallow Lotyl</p>'
     + '<p class="small muted" style="margin:12px 0 0">This game is built for the protection of all the animals of the world through the choices of its players.</p>'
     + '</div>';
   v.innerHTML = html;
@@ -2945,7 +3471,7 @@ function renderSettings(){
     + '<div class="kv"><span>Profile ID</span><b style="font-size:12.5px;word-break:break-all;text-align:right;max-width:60%">'+esc(S.profileId)+'</b></div>'
     + '<div class="kv"><span>Recovery code</span><b>'+esc(S.recoveryCode)+'</b></div>'
     + '<p class="small muted">Keep your recovery code somewhere safe — it\'s how you get this profile back on another device.</p>'
-    + '<p class="small muted" style="margin:8px 0 0">Build: 25 m reach + zoom lock fix · Nov 22, 2026 · v24</p></div>'
+    + '<p class="small muted" style="margin:8px 0 0">Build: Credits stage names · Nov 23, 2026 · v27</p></div>'
     + '<div class="card"><h3 style="margin:0 0 8px">☁️ Sync & session</h3>'
     + '<p class="small" id="syncDetail" style="margin:0 0 6px"></p>'
     + '<p class="small" style="margin:0 0 10px">Session: <b id="sessText"></b></p>'
@@ -2954,6 +3480,18 @@ function renderSettings(){
         + '<details class="more"><summary>Restore a profile</summary><input type="text" id="restoreInput" placeholder="Profile ID or recovery code" style="margin:8px 0"><p style="display:flex;gap:8px;margin:0"><button class="ghost" id="btnRestoreId">Restore by ID</button><button class="ghost" id="btnRestoreCode">Restore by code</button></p></details>'
       : '<p class="small muted" style="margin:0">Local only mode — no sync endpoint is configured for this build, so your profile lives on this device. Use Export below as a manual backup.</p>')
     + '</div>'
+    + (cfg.dbUrl
+      ? '<div class="card"><h3 style="margin:0 0 8px">👤 Account</h3>'
+        + '<div class="kv"><span>Status</span><b>' + (sessionHeld() ? 'Signed in ✓' : 'Not signed in') + '</b></div>'
+        + (cfg.authLabel ? '<div class="kv"><span>Sign-in</span><b style="text-align:right;max-width:62%">' + esc((cfg.authMethod === 'email' ? '✉️ Email' : cfg.authMethod === 'phone' ? '📱 Phone' : cfg.authMethod === 'twitch' ? '🎮 Twitch' : 'Account') + ' · ' + cfg.authLabel) + '</b></div>' : '')
+        + '<div class="kv"><span>Authenticator 2FA</span><b>' + (cfg.accountId ? (cfg.totpEnabled ? 'On ✓' : 'Off') : '—') + '</b></div>'
+        + (sessionHeld()
+          ? '<p style="display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 0"><button class="ghost" id="btnAcctOut">Sign out</button>' + (cfg.accountId && !cfg.totpEnabled ? '<button class="primary" id="btnAcctTotp">🛡️ Set up authenticator 2FA</button>' : '') + '</p>'
+            + (cfg.accountId ? '' : '<p class="small muted" style="margin:8px 0 0">Authenticator 2FA setup is available when you sign in with an email or phone account.</p>')
+          : '<p style="margin:10px 0 0"><button class="primary" id="btnAcctIn">🔐 Sign in / Create account</button></p>'
+            + '<p class="small muted" style="margin:8px 0 0">Email + password, phone + PIN, or Twitch — with optional authenticator 2FA.</p>')
+        + '<div id="acctTotpZone" style="margin-top:10px"></div></div>'
+      : '')
     + '<div class="card"><h3 style="margin:0 0 8px">📦 Backup</h3>'
     + '<p style="display:flex;gap:8px;flex-wrap:wrap;margin:0 0 8px"><button class="primary" id="btnExport">⬇️ Export profile JSON</button></p>'
     + '<textarea id="exportBox" placeholder="Exported JSON appears here — or paste a backup and Import it."></textarea>'
@@ -2969,6 +3507,9 @@ function renderSettings(){
   $("setNameBtn").addEventListener("click", function(){ S.keeperName = $("setName").value.trim(); save(); toast("Keeper name saved."); });
   var bl = $("btnLogin"); if(bl) bl.addEventListener("click", function(){ sessionLogin(); });
   var bo = $("btnLogout"); if(bo) bo.addEventListener("click", function(){ sessionLogout(); });
+  var ai = $("btnAcctIn"); if(ai) ai.addEventListener("click", function(){ authState.dismissed = false; showAuthGate(); });
+  var ao = $("btnAcctOut"); if(ao) ao.addEventListener("click", function(){ sessionLogout(); });
+  var at = $("btnAcctTotp"); if(at) at.addEventListener("click", function(){ startTotpEnroll("acctTotpZone", null); });
   var ri = $("btnRestoreId"); if(ri) ri.addEventListener("click", function(){ var val = $("restoreInput").value.trim(); if(val) restoreProfile(val, false); });
   var rc = $("btnRestoreCode"); if(rc) rc.addEventListener("click", function(){ var val = $("restoreInput").value.trim(); if(val) restoreProfile(val, true); });
   $("btnExport").addEventListener("click", function(){
@@ -3076,6 +3617,7 @@ if(cfg.dbUrl){
   setSync("local");
 }
 render();
+maybeShowAuthGate();
 setInterval(function(){ decayNeeds(); try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }, 60000);
 
 </script>
